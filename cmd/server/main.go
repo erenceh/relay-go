@@ -4,19 +4,21 @@ import (
 	"log/slog"
 	"net"
 
+	"github.com/erenceh/relay-go/internal/protocol"
 	"github.com/erenceh/relay-go/internal/server"
 )
 
 func main() {
 	network := "tcp"
 	address := ":8080"
-	slog.Info("server listening", "addr", address)
 
 	listener, err := net.Listen(network, address)
 	if err != nil {
 		slog.Error("failed to start listener", "err", err)
 	}
 	defer listener.Close()
+
+	slog.Info("server listening", "addr", address)
 
 	registry := server.NewRegistry()
 
@@ -34,15 +36,17 @@ func main() {
 
 func handleConn(conn net.Conn, registry *server.Registry) {
 	defer conn.Close()
-	defer slog.Info("client disconnected", "addr", conn.RemoteAddr())
 	defer registry.Remove(conn)
+	defer slog.Info("client disconnected", "addr", conn.RemoteAddr())
 
-	buf := make([]byte, 1024)
 	for {
-		n, err := conn.Read(buf)
+		frame, err := protocol.ReadMessage(conn)
 		if err != nil {
 			break
 		}
-		conn.Write(buf[:n])
+		slog.Info("message received",
+			"addr", conn.RemoteAddr(),
+			"msg", string(frame.Data),
+		)
 	}
 }
