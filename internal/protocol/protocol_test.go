@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"net"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFrameRoundTrip(t *testing.T) {
@@ -42,17 +45,9 @@ func TestFrameRoundTrip(t *testing.T) {
 			}()
 
 			frame, err := ReadMessage(server)
-			if !tt.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if !bytes.Equal(frame.Data, tt.wantData) {
-				t.Errorf("got %q, want %q", frame.Data, tt.wantData)
-			}
-
-			if frame.Length != uint32(len(tt.wantData)) {
-				t.Errorf("got length %d, want %d", frame.Length, len(tt.wantData))
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantData, frame.Data)
+			assert.Equal(t, uint32(len(tt.wantData)), frame.Length)
 		})
 	}
 }
