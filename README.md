@@ -65,7 +65,7 @@ microservices communicating over gRPC.
 
 ### Requirements
 
-- Go 1.22+
+- Go 1.25+
 
 ### Run the server locally
 
