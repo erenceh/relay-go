@@ -51,7 +51,7 @@ func main() {
 		readMessage(conn, done, username)
 	}()
 
-	fmt.Printf("\nwelcome %s! type '/who' to see online users, '/quit' to disconnect\n", username)
+	fmt.Printf("\nwelcome %s! type '/help' for commands, '/quit' to disconnect\n", username)
 	fmt.Print(username + ": ")
 
 	scanner := bufio.NewScanner(os.Stdin)
