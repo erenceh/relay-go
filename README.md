@@ -101,8 +101,7 @@ go run ./cmd/client -addr localhost:8080
 
 ## Deployment
 
-`relay-go` is deployed on an Oracle Cloud Free Tier VM running Ubuntu 22.04,
-managed as a systemd service that restarts automatically on crash or reboot.
+`relay-go` is designed to be self-hosted on any Linux VPS. The server is managed as a systemd service that restarts automatically on crash or reboot.
 
 The public server is accessible at `relay.erenceh.dev:8080`.
 
