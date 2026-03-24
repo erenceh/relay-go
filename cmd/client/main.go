@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -13,16 +14,17 @@ import (
 
 func main() {
 	network := "tcp"
-	address := ":8080"
+	address := flag.String("addr", "relay.erenceh.dev:8080", "server address")
+	flag.Parse()
 
 	// --- Connection setup ---
-	conn, err := net.Dial(network, address)
+	conn, err := net.Dial(network, *address)
 	if err != nil {
-		slog.Error("failed to connect to", "addr", address)
+		slog.Error("failed to connect to", "addr", *address)
 		os.Exit(1)
 	}
 	defer conn.Close()
-	slog.Info("connected to", "addr", address)
+	slog.Info("connected to", "addr", *address)
 
 	// --- Username handshake ---
 	// recieve prompt from server, read from local terminal, send back.

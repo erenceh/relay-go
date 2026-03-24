@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 
 	"github.com/erenceh/relay-go/internal/messaging"
@@ -19,6 +20,7 @@ func main() {
 	listener, err := net.Listen(network, address)
 	if err != nil {
 		slog.Error("failed to start listener", "err", err)
+		os.Exit(1)
 	}
 	defer listener.Close()
 	slog.Info("server listening", "addr", address)
@@ -35,7 +37,12 @@ func main() {
 			slog.Warn("accept error", "err", err)
 			continue
 		}
-		registry.Add(conn)
+		if err := registry.Add(conn); err != nil {
+			slog.Warn("connection rejected", "addr", conn.RemoteAddr(), "err", err)
+			conn.Close()
+			continue
+		}
+
 		slog.Info("client connected", "addr", conn.RemoteAddr())
 		go handleConn(conn, registry, presenceStore, router)
 	}

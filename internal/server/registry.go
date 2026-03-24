@@ -29,6 +29,11 @@ func (r *Registry) Add(conn net.Conn) error {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if len(r.conns) >= 100 {
+		return errors.New("server full")
+	}
+
 	r.conns[conn] = true
 
 	return nil
