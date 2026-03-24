@@ -15,18 +15,20 @@ func main() {
 	network := "tcp"
 	address := ":8080"
 
+	// --- Listener setup ---
 	listener, err := net.Listen(network, address)
 	if err != nil {
 		slog.Error("failed to start listener", "err", err)
 	}
 	defer listener.Close()
-
 	slog.Info("server listening", "addr", address)
 
+	// --- In-memory state ---
 	registry := server.NewRegistry()
 	presenceStore := presence.NewInMemoryPresenceStore()
 	router := messaging.NewInMemoryMessageRouter()
 
+	// --- Accept loop: spawn a goroutine per client ---
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -39,18 +41,22 @@ func main() {
 	}
 }
 
+// handleConn manages the full lifecycle of a single client connection.
+// It runs in its own goroutine for each connected client.
 func handleConn(
 	conn net.Conn,
 	registry *server.Registry,
 	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
 ) {
+	// --- Cleanup on disconnect ---
 	defer conn.Close()
 	defer registry.Remove(conn)
 	defer presenceStore.Remove(conn)
 	defer slog.Info("client disconnected", "addr", conn.RemoteAddr())
 
-	// send prompt to client
+	// --- Username handshake ---
+	// v1: plain username entry. Replace by JWT auth in v2.
 	protocol.WriteMessage(conn, []byte("enter username:"))
 	// read username from client
 	frame, err := protocol.ReadMessage(conn)
@@ -61,10 +67,12 @@ func handleConn(
 	presenceStore.Add(username, conn)
 	defer router.Disconnect(username)
 
+	// --- Auto-join default room ---
 	defaultRoom := "general chat"
 	currentRoom := defaultRoom
 	router.JoinRoom(currentRoom, username, conn)
 
+	// --- Message loop ---
 	for {
 		frame, err := protocol.ReadMessage(conn)
 		if err != nil {
@@ -77,17 +85,18 @@ func handleConn(
 			continue
 		}
 
+		// --- Command router ---
 		switch fields[0] {
 		case "/help":
-			// TODO improve help formatting when terminal UI library is added
+			// TODO improve help formatting when terminal UI library is added (v5)
 			commands := `
-			/join <room>			Join a room
-			/leave					Leave current room
-			/dm <user> <msg>		Send a direct message
-			/rooms					List active rooms and their members
-			/who					List active users
-			/quit					Disconnect
-			`
+/join <room>			Join a room
+/leave					Leave current room
+/dm <user> <msg>		Send a direct message
+/rooms					List active rooms and their members
+/who					List active users
+/quit					Disconnect
+`
 			protocol.WriteMessage(conn, []byte(commands))
 
 		case "/join":
@@ -95,7 +104,6 @@ func handleConn(
 				protocol.WriteMessage(conn, []byte("usage: /join <room>"))
 				continue
 			}
-
 			roomName := strings.Join(fields[1:], " ")
 			router.LeaveRoom(currentRoom, username)
 			router.JoinRoom(roomName, username, conn)
@@ -105,20 +113,18 @@ func handleConn(
 
 		case "/leave":
 			router.LeaveRoom(currentRoom, username)
-			router.JoinRoom(defaultRoom, username, conn)
-			currentRoom = defaultRoom
 			notification := messaging.NewMessage("server", username+" left the room")
 			router.BroadcastRoom(currentRoom, notification)
+			router.JoinRoom(defaultRoom, username, conn)
+			currentRoom = defaultRoom
 
 		case "/dm":
 			if len(fields) < 3 {
 				protocol.WriteMessage(conn, []byte("usage: /dm <user> <message>"))
 				continue
 			}
-
 			body := strings.Join(fields[2:], " ")
-			msg := messaging.NewMessage(username, body)
-			router.DirectMessage(fields[1], msg)
+			router.DirectMessage(fields[1], messaging.NewMessage(username, body))
 
 		case "/rooms":
 			router.PrintRooms(conn)
@@ -129,8 +135,8 @@ func handleConn(
 			protocol.WriteMessage(conn, []byte(response))
 
 		default:
-			message := messaging.NewMessage(username, msg)
-			if err := router.BroadcastRoom(currentRoom, message); err != nil {
+			// Broadcast regular messages to the user's current room
+			if err := router.BroadcastRoom(currentRoom, messaging.NewMessage(username, msg)); err != nil {
 				protocol.WriteMessage(conn, []byte("you must be in a room to send messages"))
 			}
 			slog.Info("message received",
