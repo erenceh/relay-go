@@ -1,11 +1,13 @@
 package main
 
 import (
+	"flag"
 	"log/slog"
 	"net"
 	"os"
 	"strings"
 
+	"github.com/erenceh/relay-go/internal/auth"
 	"github.com/erenceh/relay-go/internal/messaging"
 	"github.com/erenceh/relay-go/internal/presence"
 	"github.com/erenceh/relay-go/internal/protocol"
@@ -14,19 +16,28 @@ import (
 
 func main() {
 	network := "tcp"
-	address := ":8080"
+	address := flag.String("addr", ":8080", "listen address")
+	flag.Parse()
+
+	secret := os.Getenv("JWT_SECRET")
+	// Temporary secret for testing
+	if secret == "" {
+		slog.Warn("JWT_SECRET not set, using insecure default")
+		secret = "dev-secret-change-me"
+	}
 
 	// --- Listener setup ---
-	listener, err := net.Listen(network, address)
+	listener, err := net.Listen(network, *address)
 	if err != nil {
 		slog.Error("failed to start listener", "err", err)
 		os.Exit(1)
 	}
 	defer listener.Close()
-	slog.Info("server listening", "addr", address)
+	slog.Info("server listening", "addr", *address)
 
 	// --- In-memory state ---
 	registry := server.NewRegistry()
+	authService := auth.NewInMemoryAuthService([]byte(secret))
 	presenceStore := presence.NewInMemoryPresenceStore()
 	router := messaging.NewInMemoryMessageRouter()
 
@@ -44,7 +55,7 @@ func main() {
 		}
 
 		slog.Info("client connected", "addr", conn.RemoteAddr())
-		go handleConn(conn, registry, presenceStore, router)
+		go handleConn(conn, registry, authService, presenceStore, router)
 	}
 }
 
@@ -53,6 +64,7 @@ func main() {
 func handleConn(
 	conn net.Conn,
 	registry *server.Registry,
+	authService auth.AuthService,
 	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
 ) {
@@ -63,14 +75,82 @@ func handleConn(
 	defer slog.Info("client disconnected", "addr", conn.RemoteAddr())
 
 	// --- Username handshake ---
-	// v1: plain username entry. Replace by JWT auth in v2.
-	protocol.WriteMessage(conn, []byte("enter username:"))
-	// read username from client
-	frame, err := protocol.ReadMessage(conn)
-	if err != nil {
-		return
+	var username string
+authLoop:
+	for {
+		protocol.WriteMessage(conn, []byte("welcome to relay-go. /register or /login:"))
+		frame, err := protocol.ReadMessage(conn)
+		if err != nil {
+			return
+		}
+
+		userRes := strings.TrimSpace(string(frame.Data))
+		switch userRes {
+		case "/register":
+			protocol.WriteMessage(conn, []byte("enter your username:"))
+			userNameFrame, err := protocol.ReadMessage(conn)
+			if err != nil {
+				return
+			}
+			username = string(userNameFrame.Data)
+
+			protocol.WriteMessage(conn, []byte("enter your password:"))
+			userPasswordFrame, err := protocol.ReadMessage(conn)
+			if err != nil {
+				return
+			}
+			password := string(userPasswordFrame.Data)
+
+			if err := authService.Register(username, password); err != nil {
+				protocol.WriteMessage(conn, []byte(err.Error()))
+				continue authLoop
+			}
+			token, err := authService.Login(username, password)
+			if err != nil {
+				protocol.WriteMessage(conn, []byte(err.Error()))
+				continue authLoop
+			}
+			username, err = authService.Validate(token)
+			if err != nil {
+				protocol.WriteMessage(conn, []byte(err.Error()))
+				continue authLoop
+			}
+			protocol.WriteMessage(conn, []byte("registration successful"))
+			break authLoop
+
+		case "/login":
+			protocol.WriteMessage(conn, []byte("enter your username:"))
+			userNameFrame, err := protocol.ReadMessage(conn)
+			if err != nil {
+				return
+			}
+			username = string(userNameFrame.Data)
+
+			protocol.WriteMessage(conn, []byte("enter your password:"))
+			userPasswordFrame, err := protocol.ReadMessage(conn)
+			if err != nil {
+				return
+			}
+			password := string(userPasswordFrame.Data)
+
+			token, err := authService.Login(username, password)
+			if err != nil {
+				protocol.WriteMessage(conn, []byte(err.Error()))
+				continue authLoop
+			}
+			username, err = authService.Validate(token)
+			if err != nil {
+				protocol.WriteMessage(conn, []byte(err.Error()))
+				continue authLoop
+			}
+			protocol.WriteMessage(conn, []byte("login successful"))
+			break authLoop
+
+		default:
+			protocol.WriteMessage(conn, []byte("invalid input. please enter /register or /login:"))
+			continue
+		}
 	}
-	username := string(frame.Data)
 	presenceStore.Add(username, conn)
 	defer router.Disconnect(username)
 

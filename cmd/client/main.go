@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/erenceh/relay-go/internal/protocol"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -28,20 +30,51 @@ func main() {
 
 	// --- Username handshake ---
 	// recieve prompt from server, read from local terminal, send back.
-	// Replaced by JWT auth flow in v2.
-	frame, err := protocol.ReadMessage(conn)
-	if err != nil {
-		slog.Error("failed to receive prompt", "err", err)
-		os.Exit(1)
-	}
-
+	scanner := bufio.NewScanner(os.Stdin)
 	var username string
-	fmt.Print(string(frame.Data) + " ")
-	fmt.Scan(&username)
+authLoop:
+	for {
+		frame, err := protocol.ReadMessage(conn)
+		if err != nil {
+			slog.Error("failed to receive prompt", "err", err)
+			os.Exit(1)
+		}
+		prompt := strings.ToLower(string(frame.Data))
 
-	if err := protocol.WriteMessage(conn, []byte(username)); err != nil {
-		slog.Error("failed to send username", "err", err)
-		os.Exit(1)
+		if strings.Contains(prompt, "successful") {
+			fmt.Println(prompt)
+			break authLoop
+		}
+
+		if !strings.HasSuffix(strings.TrimSpace(prompt), ":") {
+			fmt.Println(prompt)
+			continue authLoop
+		}
+
+		var input string
+		if strings.Contains(prompt, "password") {
+			fmt.Print(prompt + " ")
+			passwordBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+			if err != nil {
+				slog.Error("failed to read password", "err", err)
+				os.Exit(1)
+			}
+			fmt.Println()
+			input = string(passwordBytes)
+		} else {
+			fmt.Print(prompt + " ")
+			scanner.Scan()
+			input = strings.TrimSpace(scanner.Text())
+
+			if strings.Contains(prompt, "username") {
+				username = input
+			}
+		}
+
+		if err := protocol.WriteMessage(conn, []byte(input)); err != nil {
+			slog.Error("failed to send username", "err", err)
+			os.Exit(1)
+		}
 	}
 
 	// --- Incoming message goroutine ---
@@ -60,7 +93,6 @@ func main() {
 	fmt.Printf("\nwelcome %s! type '/help' for commands, '/quit' to disconnect\n", username)
 	fmt.Print(username + ": ")
 
-	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		select {
 		case <-done:
