@@ -67,33 +67,31 @@ microservices communicating over gRPC.
 
 - Go 1.25+
 
-### Run the server locally
-
-```bash
-go run ./cmd/server
-```
-
-### Run the client
-
-Connect to the public server:
+### Connect to the public server
 
 ```bash
 go run ./cmd/client
 ```
 
-Connect to a local server:
+### Run locally
 
 ```bash
+# terminal 1
+go run ./cmd/server
+
+# terminal 2
 go run ./cmd/client -addr localhost:8080
 ```
 
 ### Available commands
 
 ```
+/register            Create a new account
+/login               Login to existing account
 /join <room>         Join a room
-/leave               Leave current room and return to general chat
+/leave               Leave current room
 /dm <user> <msg>     Send a direct message
-/rooms               List active rooms and their members
+/rooms               List active rooms and members
 /who                 List online users
 /help                Show available commands
 /quit                Disconnect
@@ -101,28 +99,7 @@ go run ./cmd/client -addr localhost:8080
 
 ## Deployment
 
-`relay-go` is designed to be self-hosted on any Linux VPS. The server is managed as a systemd service that restarts automatically on crash or reboot.
-
-The public server is accessible at `relay.erenceh.dev:8080`.
-
-### Deploy to VPS
-
-```bash
-VPS_HOST=relay.erenceh.dev ./scripts/deploy.sh
-```
-
-### Manual deployment
-
-```bash
-# cross-compile for Linux amd64
-GOOS=linux GOARCH=amd64 go build -o relay-server ./cmd/server
-
-# copy to VPS
-scp relay-server ubuntu@<your-vps>:~/relay-server
-
-# restart service
-ssh ubuntu@<your-vps> "sudo systemctl restart relay-go"
-```
+The public server runs on Oracle Cloud Free Tier at `relay.erenceh.dev:8080` managed as a systemd service.
 
 ## License
 
