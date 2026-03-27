@@ -8,8 +8,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/erenceh/relay-go/internal/domain"
 	"github.com/erenceh/relay-go/internal/protocol"
 )
+
+const SystemSenderID = "00000000-0000-0000-0000-000000000000"
+const SystemUsername = "server"
 
 // MessageRouter defines the interface for routing messages between users and rooms.
 // Implementations must be safe for concurrent use.
@@ -21,10 +25,10 @@ type MessageRouter interface {
 	LeaveRoom(roomName string, username string) error
 	// BroadcastRoom sends a message to all members of the named room.
 	// Returns an error if the room does not exists.
-	BroadcastRoom(roomName string, msg Message) error
+	BroadcastRoom(roomName string, msg domain.Message) error
 	// DirectMessage sends a private message to a specific online user.
 	// Returns an error if the recipient is offline.
-	DirectMessage(to string, msg Message) error
+	DirectMessage(to string, msg domain.Message) error
 	// Disconnect removes the user from all rooms and the user map on disconnect.
 	Disconnect(username string)
 	// ListRooms returns the names of all currently active rooms.
@@ -41,42 +45,31 @@ type MessageRouter interface {
 // All operations are safe for concurrent use via a mutex.
 type InMemoryMessageRouter struct {
 	mu    sync.Mutex
-	rooms map[string]Room     // room name -> room
-	users map[string]net.Conn // username -> connection, used for DM routing
+	rooms map[string]*RoomSession // room name -> room
+	users map[string]net.Conn     // username -> connection, used for DM routing
 }
 
 // NewInMemoryMessageRouter returns an initialized InMemoryMessageRouter.
 func NewInMemoryMessageRouter() *InMemoryMessageRouter {
 	return &InMemoryMessageRouter{
-		rooms: make(map[string]Room),
+		rooms: make(map[string]*RoomSession),
 		users: make(map[string]net.Conn),
 	}
 }
 
-// Message represents a chat message with a sender and body.
-type Message struct {
-	From string
-	Body string
-}
-
-// NewMessage returns an initialized Message with the given sender and body.
-func NewMessage(from string, body string) Message {
-	return Message{
-		From: from,
-		Body: body,
-	}
-}
-
-// Room represents a chat room with a name and its currently connected members.
-type Room struct {
-	Name    string
+// RoomSession holds the runtime state for an active room: its domain metadata
+// and the set of currently connected members. Members is keyed by username and
+// maps to the underlying TCP connection used to write messages to that user.
+type RoomSession struct {
+	Room    domain.Room
 	Members map[string]net.Conn
 }
 
-// NewRoom returns an initialized Room with the given name.
-func NewRoom(name string) Room {
-	return Room{
-		Name:    name,
+// NewRoomSession returns an initialized RoomSession for the given room with an
+// empty Members map ready to accept connections.
+func NewRoomSession(room domain.Room) *RoomSession {
+	return &RoomSession{
+		Room:    room,
 		Members: make(map[string]net.Conn),
 	}
 }
@@ -94,12 +87,13 @@ func (mr *InMemoryMessageRouter) JoinRoom(roomName string, username string, conn
 	defer mr.mu.Unlock()
 
 	// Create the room if it doesn't exist yet.
-	room, ok := mr.rooms[roomName]
+	roomSession, ok := mr.rooms[roomName]
 	if !ok {
-		room = NewRoom(roomName)
-		mr.rooms[roomName] = room
+		room := domain.NewRoom(roomName)
+		roomSession = NewRoomSession(room)
+		mr.rooms[roomName] = roomSession
 	}
-	room.Members[username] = conn
+	roomSession.Members[username] = conn
 	mr.users[username] = conn
 
 	return nil
@@ -130,7 +124,7 @@ func (mr *InMemoryMessageRouter) LeaveRoom(roomName string, username string) err
 // Failed deliveries are logged and skipped, a bad connection does not
 // interrupt delivery to other members.
 // Returns an error if the room does not exist.
-func (mr *InMemoryMessageRouter) BroadcastRoom(roomName string, msg Message) error {
+func (mr *InMemoryMessageRouter) BroadcastRoom(roomName string, msg domain.Message) error {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
 
@@ -139,7 +133,7 @@ func (mr *InMemoryMessageRouter) BroadcastRoom(roomName string, msg Message) err
 		return fmt.Errorf("the room:%s does not exist", roomName)
 	}
 
-	broadcastMsg := fmt.Sprintf("[%s] %s: %s", room.Name, msg.From, msg.Body)
+	broadcastMsg := fmt.Sprintf("[%s] %s: %s", room.Room.Name, msg.From, msg.Body)
 	for username, conn := range room.Members {
 		if err := protocol.WriteMessage(conn, []byte(broadcastMsg)); err != nil {
 			slog.Warn("failed to deliver message",
@@ -155,7 +149,7 @@ func (mr *InMemoryMessageRouter) BroadcastRoom(roomName string, msg Message) err
 
 // DirectMessage sends a private message to the named user.
 // Returns an error if the recipient is not currently online.
-func (mr *InMemoryMessageRouter) DirectMessage(to string, msg Message) error {
+func (mr *InMemoryMessageRouter) DirectMessage(to string, msg domain.Message) error {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
 
@@ -199,7 +193,7 @@ func (mr *InMemoryMessageRouter) ListRooms() []string {
 
 	rooms := make([]string, 0, len(mr.rooms))
 	for _, room := range mr.rooms {
-		rooms = append(rooms, room.Name)
+		rooms = append(rooms, room.Room.Name)
 	}
 
 	return rooms
@@ -244,11 +238,26 @@ func (mr *InMemoryMessageRouter) PrintRooms(conn net.Conn) error {
 		for member := range room.Members {
 			members = append(members, member)
 		}
-		response := fmt.Sprintf("%s - members: %s", room.Name, strings.Join(members, ", "))
+		response := fmt.Sprintf("%s - members: %s", room.Room.Name, strings.Join(members, ", "))
 		if err := protocol.WriteMessage(conn, []byte(response)); err != nil {
 			slog.Warn("failed to print room info", "room", room, "err", err)
 		}
 	}
 
 	return nil
+}
+
+// NewMessage is a temporary domain.NewMessage wrapper for missing senderID or roomID.
+func NewMessage(from, body string) domain.Message {
+	return domain.NewMessage("", "", from, body)
+}
+
+// NewSystemMessage creates a server notification message.
+func NewSystemMessage(roomID, body string) domain.Message {
+	return domain.NewMessage(SystemSenderID, roomID, SystemUsername, body)
+}
+
+// NewUserMessage creates a message from a real user.
+func NewUserMessage(senderID, roomID, from, body string) domain.Message {
+	return domain.NewMessage(senderID, roomID, from, body)
 }

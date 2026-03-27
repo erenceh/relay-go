@@ -8,16 +8,35 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erenceh/relay-go/internal/domain"
+	"github.com/erenceh/relay-go/internal/repository"
 	"github.com/golang-jwt/jwt"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// authService is a repository-backed implementation of AuthService.
+// It delegates user storage to a UserRepository and signs tokens with secret.
+type authService struct {
+	users         repository.UserRepository
+	refreshTokens map[string]string
+	secret        []byte
+}
+
+// NewAuthService returns an authService that delegates user storage to users and signs tokens with secret.
+func NewAuthService(users repository.UserRepository, secret []byte) *authService {
+	return &authService{
+		users:         users,
+		refreshTokens: make(map[string]string),
+		secret:        secret,
+	}
+}
 
 // InMemoryAuthService is an in-process implementation of AuthService.
 // User records and credentials are stored in a mutex-protected map with no persistence.
 // It is safe for concurrent use.
 type InMemoryAuthService struct {
 	mu            sync.Mutex
-	users         map[string]*User
+	users         map[string]*domain.User
 	refreshTokens map[string]string
 	secret        []byte
 }
@@ -25,7 +44,7 @@ type InMemoryAuthService struct {
 // NewInMemoryAuthService returns an InMemoryAuthService that signs tokens with secret.
 func NewInMemoryAuthService(secret []byte) *InMemoryAuthService {
 	return &InMemoryAuthService{
-		users:         make(map[string]*User),
+		users:         make(map[string]*domain.User),
 		refreshTokens: make(map[string]string),
 		secret:        secret,
 	}
@@ -54,7 +73,7 @@ func (as *InMemoryAuthService) Register(username, password string) error {
 		return fmt.Errorf("failed to generate password hash: %w", err)
 	}
 
-	user := NewUser(username, string(hash))
+	user := domain.NewUser(username, string(hash))
 	as.users[username] = user
 
 	return nil

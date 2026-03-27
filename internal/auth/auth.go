@@ -11,22 +11,10 @@ type AuthService interface {
 	Login(username, password string) (accessToken, refreshToken string, err error)
 	// Validate checks the session token and returns the associated username.
 	Validate(token string) (username string, err error)
-	//
+	// Refresh validates the given refresh token, revokes it, and returns a new access token
+	// and a new refresh token. Returns an error if the token is missing or unrecognized.
 	Refresh(refreshToken string) (accessToken, newRefreshToken string, err error)
-	//
+	// IssueRefreshToken generates a cryptographically random refresh token for the given username
+	// and stores it for later validation. Returns an error if the username is empty or token generation fails.
 	IssueRefreshToken(username string) (refreshToken string, err error)
-}
-
-// User represents an authenticated user record.
-type User struct {
-	Username     string
-	PasswordHash string // bcrypt or equivalent hash — never the plaintext password
-}
-
-// NewUser constructs a User from an already-hashed password.
-func NewUser(username, hashedPassword string) *User {
-	return &User{
-		Username:     username,
-		PasswordHash: hashedPassword,
-	}
 }

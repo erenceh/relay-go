@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erenceh/relay-go/internal/domain"
 	"github.com/golang-jwt/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,7 @@ func TestAuth(t *testing.T) {
 		{
 			name: "Register returns error if named user exists",
 			run: func(t *testing.T, svc *InMemoryAuthService) {
-				svc.users["user"] = NewUser("user", "123")
+				svc.users["user"] = domain.NewUser("user", "123")
 				err := svc.Register("user", "")
 				assert.Error(t, err)
 			},
