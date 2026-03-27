@@ -8,9 +8,13 @@ type AuthService interface {
 	// Returns an error if the username is already taken or the input is invalid.
 	Register(username, password string) error
 	// Login authenticates the user and returns a session token on success.
-	Login(username, password string) (string, error)
+	Login(username, password string) (accessToken, refreshToken string, err error)
 	// Validate checks the session token and returns the associated username.
-	Validate(token string) (string, error)
+	Validate(token string) (username string, err error)
+	//
+	Refresh(refreshToken string) (accessToken, newRefreshToken string, err error)
+	//
+	IssueRefreshToken(username string) (refreshToken string, err error)
 }
 
 // User represents an authenticated user record.

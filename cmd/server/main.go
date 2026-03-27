@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -75,13 +76,26 @@ func handleConn(
 	defer slog.Info("client disconnected", "addr", conn.RemoteAddr())
 
 	// --- Username handshake ---
-	var username string
+	protocol.WriteMessage(conn, []byte("welcome to relay-go. /register or /login:"))
+	username, err := runAuthLoop(conn, authService)
+	if err != nil {
+		protocol.WriteMessage(conn, []byte(err.Error()))
+		return
+	}
+
+	presenceStore.Add(username, conn)
+	defer router.Disconnect(username)
+
+	// --- Message loop ---
+	runCommandLoop(conn, presenceStore, router, username)
+}
+
+func runAuthLoop(conn net.Conn, authService auth.AuthService) (username string, err error) {
 authLoop:
 	for {
-		protocol.WriteMessage(conn, []byte("welcome to relay-go. /register or /login:"))
 		frame, err := protocol.ReadMessage(conn)
 		if err != nil {
-			return
+			return "", fmt.Errorf("connection lost during auth: %w", err)
 		}
 
 		userRes := strings.TrimSpace(string(frame.Data))
@@ -90,14 +104,14 @@ authLoop:
 			protocol.WriteMessage(conn, []byte("enter your username:"))
 			userNameFrame, err := protocol.ReadMessage(conn)
 			if err != nil {
-				return
+				return "", fmt.Errorf("connection lost during auth: %w", err)
 			}
 			username = string(userNameFrame.Data)
 
 			protocol.WriteMessage(conn, []byte("enter your password:"))
 			userPasswordFrame, err := protocol.ReadMessage(conn)
 			if err != nil {
-				return
+				return "", fmt.Errorf("connection lost during auth: %w", err)
 			}
 			password := string(userPasswordFrame.Data)
 
@@ -105,45 +119,68 @@ authLoop:
 				protocol.WriteMessage(conn, []byte(err.Error()))
 				continue authLoop
 			}
-			token, err := authService.Login(username, password)
+			accessToken, refreshToken, err := authService.Login(username, password)
 			if err != nil {
 				protocol.WriteMessage(conn, []byte(err.Error()))
 				continue authLoop
 			}
-			username, err = authService.Validate(token)
+			username, err = authService.Validate(accessToken)
 			if err != nil {
 				protocol.WriteMessage(conn, []byte(err.Error()))
 				continue authLoop
 			}
 			protocol.WriteMessage(conn, []byte("registration successful"))
+			protocol.WriteMessage(conn, []byte("refresh:"+refreshToken))
 			break authLoop
 
 		case "/login":
 			protocol.WriteMessage(conn, []byte("enter your username:"))
 			userNameFrame, err := protocol.ReadMessage(conn)
 			if err != nil {
-				return
+				return "", fmt.Errorf("connection lost during auth: %w", err)
 			}
 			username = string(userNameFrame.Data)
 
 			protocol.WriteMessage(conn, []byte("enter your password:"))
 			userPasswordFrame, err := protocol.ReadMessage(conn)
 			if err != nil {
-				return
+				return "", fmt.Errorf("connection lost during auth: %w", err)
 			}
 			password := string(userPasswordFrame.Data)
 
-			token, err := authService.Login(username, password)
+			accessToken, refreshToken, err := authService.Login(username, password)
 			if err != nil {
 				protocol.WriteMessage(conn, []byte(err.Error()))
 				continue authLoop
 			}
-			username, err = authService.Validate(token)
+			username, err = authService.Validate(accessToken)
 			if err != nil {
 				protocol.WriteMessage(conn, []byte(err.Error()))
 				continue authLoop
 			}
 			protocol.WriteMessage(conn, []byte("login successful"))
+			protocol.WriteMessage(conn, []byte("refresh:"+refreshToken))
+			break authLoop
+
+		case "/refresh":
+			protocol.WriteMessage(conn, []byte("enter your refresh token:"))
+			refreshTokenFrame, err := protocol.ReadMessage(conn)
+			if err != nil {
+				return "", fmt.Errorf("connection lost during auth: %w", err)
+			}
+			refreshTokenOld := string(refreshTokenFrame.Data)
+			accessToken, refreshToken, err := authService.Refresh(refreshTokenOld)
+			if err != nil {
+				protocol.WriteMessage(conn, []byte(err.Error()))
+				continue authLoop
+			}
+			username, err = authService.Validate(accessToken)
+			if err != nil {
+				protocol.WriteMessage(conn, []byte(err.Error()))
+				continue authLoop
+			}
+			protocol.WriteMessage(conn, []byte("login successful"))
+			protocol.WriteMessage(conn, []byte("refresh:"+refreshToken))
 			break authLoop
 
 		default:
@@ -151,15 +188,21 @@ authLoop:
 			continue
 		}
 	}
-	presenceStore.Add(username, conn)
-	defer router.Disconnect(username)
 
+	return username, nil
+}
+
+func runCommandLoop(
+	conn net.Conn,
+	presenceStore presence.PresenceStore,
+	router messaging.MessageRouter,
+	username string,
+) {
 	// --- Auto-join default room ---
 	defaultRoom := "general chat"
 	currentRoom := defaultRoom
 	router.JoinRoom(currentRoom, username, conn)
 
-	// --- Message loop ---
 	for {
 		frame, err := protocol.ReadMessage(conn)
 		if err != nil {
