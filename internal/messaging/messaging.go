@@ -12,9 +12,6 @@ import (
 	"github.com/erenceh/relay-go/internal/protocol"
 )
 
-const SystemSenderID = "00000000-0000-0000-0000-000000000000"
-const SystemUsername = "server"
-
 // MessageRouter defines the interface for routing messages between users and rooms.
 // Implementations must be safe for concurrent use.
 type MessageRouter interface {
@@ -254,7 +251,7 @@ func NewMessage(from, body string) domain.Message {
 
 // NewSystemMessage creates a server notification message.
 func NewSystemMessage(roomID, body string) domain.Message {
-	return domain.NewMessage(SystemSenderID, roomID, SystemUsername, body)
+	return domain.NewMessage(domain.SystemSenderID, roomID, domain.SystemUsername, body)
 }
 
 // NewUserMessage creates a message from a real user.
