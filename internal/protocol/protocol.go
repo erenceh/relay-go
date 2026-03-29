@@ -25,6 +25,12 @@ func ReadMessage(conn net.Conn) (*Frame, error) {
 	}
 
 	length := binary.BigEndian.Uint32(buf)
+
+	const maxMessageSize = 1 << 20
+	if length > maxMessageSize {
+		return nil, fmt.Errorf("message too large: %d bytes", length)
+	}
+
 	data := make([]byte, length)
 	if _, err := io.ReadFull(conn, data); err != nil {
 		return nil, fmt.Errorf("read body error: %w", err)
