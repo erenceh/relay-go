@@ -8,7 +8,8 @@ echo "stopping service..."
 ssh ubuntu@$VPS_HOST "sudo systemctl stop relay-go"
 
 echo "copying to VPS..."
-scp relay-server ubuntu@$VPS_HOST:~/relay-server
+scp relay-server ubuntu@$VPS_HOST:/tmp/relay-server
+ssh ubuntu@$VPS_HOST "sudo mv /tmp/relay-server /usr/local/bin/relay-server && sudo systemctl restart relay-go"
 
 echo "restarting service...:"
 ssh ubuntu@$VPS_HOST "sudo systemctl start relay-go"
