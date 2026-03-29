@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/binary"
 	"net"
 	"testing"
 
@@ -13,6 +14,7 @@ func TestFrameRoundTrip(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		input    []byte
+		run      func(t *testing.T, conn net.Conn)
 		wantData []byte
 		wantErr  bool
 	}{
@@ -50,4 +52,21 @@ func TestFrameRoundTrip(t *testing.T) {
 			assert.Equal(t, uint32(len(tt.wantData)), frame.Length)
 		})
 	}
+}
+
+func TestReadMessageOversized(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	// write a header claiming 2MB payload
+	go func() {
+		buf := make([]byte, 4)
+		binary.BigEndian.PutUint32(buf, 2<<20)
+		client.Write(buf)
+	}()
+
+	_, err := ReadMessage(server)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "too large")
 }

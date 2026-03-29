@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/erenceh/relay-go/internal/auth"
 	"github.com/erenceh/relay-go/internal/db"
@@ -104,6 +105,8 @@ func handleConn(
 	defer presenceStore.Remove(conn)
 	defer slog.Info("client disconnected", "addr", conn.RemoteAddr())
 
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+
 	// --- Username handshake ---
 	protocol.WriteMessage(conn, []byte("welcome to relay-go. /register or /login:"))
 	username, userID, err := runAuthLoop(conn, authService, presenceStore)
@@ -111,6 +114,7 @@ func handleConn(
 		protocol.WriteMessage(conn, []byte(err.Error()))
 		return
 	}
+	conn.SetDeadline(time.Now().Add(5 * time.Minute))
 
 	presenceStore.Add(username, conn)
 	defer router.Disconnect(username)
@@ -268,6 +272,7 @@ func runCommandLoop(
 		if err != nil {
 			break
 		}
+		conn.SetDeadline(time.Now().Add(5 * time.Minute))
 
 		msg := strings.TrimSpace(string(frame.Data))
 		fields := strings.Fields(msg)
