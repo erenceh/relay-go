@@ -15,6 +15,7 @@ import (
 	"github.com/erenceh/relay-go/internal/messaging"
 	"github.com/erenceh/relay-go/internal/presence"
 	"github.com/erenceh/relay-go/internal/protocol"
+	"github.com/erenceh/relay-go/internal/ratelimit"
 	"github.com/erenceh/relay-go/internal/repository"
 	"github.com/erenceh/relay-go/internal/server"
 	"github.com/joho/godotenv"
@@ -66,6 +67,8 @@ func main() {
 	registry := server.NewRegistry()
 	userRepo := repository.NewPostgresUserRepository(database)
 	authService := auth.NewAuthService(userRepo, []byte(secret))
+	registrationLimiter := ratelimit.NewRegistry(3, time.Hour)
+	messageLimiter := ratelimit.NewBucketReistry(10, 2)
 	presenceStore := presence.NewInMemoryPresenceStore()
 	roomRepo := repository.NewPostgresRoomRepository(database)
 	router := messaging.NewInMemoryMessageRouter(roomRepo)
@@ -85,7 +88,15 @@ func main() {
 		}
 
 		slog.Info("client connected", "addr", conn.RemoteAddr())
-		go handleConn(conn, registry, authService, presenceStore, router, messageRepo)
+		go handleConn(
+			conn,
+			registry,
+			authService,
+			registrationLimiter,
+			messageLimiter,
+			presenceStore,
+			router,
+			messageRepo)
 	}
 }
 
@@ -95,6 +106,8 @@ func handleConn(
 	conn net.Conn,
 	registry *server.Registry,
 	authService auth.AuthService,
+	registrationLimiter *ratelimit.Registry,
+	messageLimiter *ratelimit.BucketRegistry,
 	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
 	messageRepo repository.MessageRepository,
@@ -109,7 +122,7 @@ func handleConn(
 
 	// --- Username handshake ---
 	protocol.WriteMessage(conn, []byte("welcome to relay-go. /register or /login:"))
-	username, userID, err := runAuthLoop(conn, authService, presenceStore)
+	username, userID, err := runAuthLoop(conn, authService, registrationLimiter, presenceStore)
 	if err != nil {
 		protocol.WriteMessage(conn, []byte(err.Error()))
 		return
@@ -120,12 +133,13 @@ func handleConn(
 	defer router.Disconnect(username)
 
 	// --- Message loop ---
-	runCommandLoop(conn, presenceStore, router, username, userID, messageRepo)
+	runCommandLoop(conn, messageLimiter, presenceStore, router, username, userID, messageRepo)
 }
 
 func runAuthLoop(
 	conn net.Conn,
 	authService auth.AuthService,
+	registrationLimiter *ratelimit.Registry,
 	presenceStore presence.PresenceStore,
 ) (username, userID string, err error) {
 	sendError := func(msg string) {
@@ -143,6 +157,13 @@ authLoop:
 		userRes := strings.TrimSpace(string(frame.Data))
 		switch userRes {
 		case "/register":
+			addr := conn.RemoteAddr().String()
+			host, _, _ := net.SplitHostPort(addr)
+			if !registrationLimiter.Allow(host) {
+				sendError("registration rate limit exceeded - try again later")
+				continue authLoop
+			}
+
 			protocol.WriteMessage(conn, []byte("enter your username:"))
 			userNameFrame, err := protocol.ReadMessage(conn)
 			if err != nil {
@@ -244,6 +265,7 @@ authLoop:
 
 func runCommandLoop(
 	conn net.Conn,
+	messageLimiter *ratelimit.BucketRegistry,
 	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
 	username string,
@@ -338,7 +360,11 @@ func runCommandLoop(
 			protocol.WriteMessage(conn, []byte(response))
 
 		default:
-			// Broadcast regular messages to the user's current room
+			if !messageLimiter.Allow(username) {
+				protocol.WriteMessage(conn, []byte("rate limit exceeded"))
+				continue
+			}
+
 			if err := router.BroadcastRoom(currentRoom, messaging.NewMessage(username, msg)); err != nil {
 				protocol.WriteMessage(conn, []byte("you must be in a room to send messages"))
 			}
