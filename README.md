@@ -16,24 +16,27 @@ WebSocket support for browser clients planned in v5.
 
 ## Features (v1)
 
-- [x] Project scaffold and folder structure
-- [x] Length-prefix framing protocol (4-byte uint32 header)
-- [x] Raw TCP server with goroutine-per-client concurrency
-- [x] Connection registry with mutex-protected shared state
-- [x] CLI client with concurrent read/write goroutines
-- [x] Online/offline presence tracking with `/who`
-- [x] Group chat rooms with `/join`, `/leave`, `/rooms`
-- [x] Direct messaging with `/dm`
-- [x] Graceful disconnect and room cleanup
-- [x] Deployed on Oracle Cloud Free Tier VPS with systemd
+- JWT authentication with bcrypt password hashing
+- Opaque refresh tokens with rotation
+- Auto-reconnect with exponential backoff
+- PostgreSQL message persistence
+- Message history on room join
+- Per-IP registration rate limiting (3/hour)
+- Per-user message rate limiting (10 burst, 2/sec)
+- Input validation on usernames and room names
+- Connection timeouts (30s auth, 5min idle)
+
+## Rate Limiting
+
+- Registration: max 3 accounts per IP per hour
+- Messages: 10 message burst, sustained 2 messages/second per user
 
 ## Planned
 
-- User authentication (JWT) and message persistence (PostgreSQL)
 - gRPC-based microservice split (auth, messaging, presence)
 - Message broker (NATS/Redis) for event-driven architecture
 - API gateway with WebSocket transport for browser clients
-- Rust rewrite of presence service ([relay-rs](https://github.com/erenceh/relay-rs))
+- relay-web browser client
 
 ## Architecture
 
@@ -90,7 +93,6 @@ go run ./cmd/client -addr localhost:8080
 /login               Login to existing account
 /join <room>         Join a room
 /leave               Leave current room
-/dm <user> <msg>     Send a direct message
 /rooms               List active rooms and members
 /who                 List online users
 /help                Show available commands
