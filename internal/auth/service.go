@@ -9,32 +9,30 @@ import (
 	"time"
 
 	"github.com/erenceh/relay-go/internal/domain"
+	"github.com/erenceh/relay-go/internal/repository"
 	"github.com/golang-jwt/jwt"
 	"golang.org/x/crypto/bcrypt"
 )
 
-// InMemoryAuthService is an in-process implementation of AuthService.
-// User records and credentials are stored in a mutex-protected map with no persistence.
-// It is safe for concurrent use.
-type InMemoryAuthService struct {
-	mu            sync.Mutex
-	users         map[string]*domain.User
+// authService is a repository-backed implementation of AuthService.
+// It delegates user storage to a UserRepository and signs tokens with secret.
+type authService struct {
+	users         repository.UserRepository
 	refreshTokens map[string]string
 	secret        []byte
+	mu            sync.Mutex
 }
 
-// NewInMemoryAuthService returns an InMemoryAuthService that signs tokens with secret.
-func NewInMemoryAuthService(secret []byte) *InMemoryAuthService {
-	return &InMemoryAuthService{
-		users:         make(map[string]*domain.User),
+// NewAuthService returns an authService that delegates user storage to users and signs tokens with secret.
+func NewAuthService(users repository.UserRepository, secret []byte) *authService {
+	return &authService{
+		users:         users,
 		refreshTokens: make(map[string]string),
 		secret:        secret,
 	}
 }
 
-// Register creates a new user with the given username and plaintext password.
-// Returns an error if the username is already taken or the input is invalid.
-func (as *InMemoryAuthService) Register(username, password string) error {
+func (as *authService) Register(username, password string) error {
 	if len(username) == 0 {
 		return errors.New("username must not be empty")
 	}
@@ -42,12 +40,12 @@ func (as *InMemoryAuthService) Register(username, password string) error {
 		return errors.New("password must not be empty")
 	}
 
-	as.mu.Lock()
-	defer as.mu.Unlock()
-
-	_, ok := as.users[username]
-	if ok {
-		return errors.New("that user already exist")
+	existing, err := as.users.FindByUsername(username)
+	if err != nil {
+		return fmt.Errorf("failed to check existing user: %w", err)
+	}
+	if existing != nil {
+		return errors.New("username already taken")
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -56,13 +54,14 @@ func (as *InMemoryAuthService) Register(username, password string) error {
 	}
 
 	user := domain.NewUser(username, string(hash))
-	as.users[username] = user
+	if err := as.users.Create(user); err != nil {
+		return fmt.Errorf("failed to create user: %w", err)
+	}
 
 	return nil
 }
 
-// Login authenticates the user and returns a session token on success.
-func (as *InMemoryAuthService) Login(username, password string) (accessToken, refreshToken string, err error) {
+func (as *authService) Login(username, password string) (accessToken, refreshToken string, err error) {
 	if len(username) == 0 {
 		return "", "", errors.New("username must not be empty")
 	}
@@ -70,8 +69,11 @@ func (as *InMemoryAuthService) Login(username, password string) (accessToken, re
 		return "", "", errors.New("password must not be empty")
 	}
 
-	user, ok := as.users[username]
-	if !ok {
+	user, err := as.users.FindByUsername(username)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to find user: %w", err)
+	}
+	if user == nil {
 		return "", "", errors.New("invalid credentials")
 	}
 
@@ -98,8 +100,7 @@ func (as *InMemoryAuthService) Login(username, password string) (accessToken, re
 	return accessToken, refreshToken, nil
 }
 
-// Validate checks the session token and returns the associated username.
-func (as *InMemoryAuthService) Validate(tokenString string) (username, userID string, err error) {
+func (as *authService) Validate(tokenString string) (username, userID string, err error) {
 	if len(tokenString) == 0 {
 		return "", "", errors.New("token must not be empty")
 	}
@@ -131,9 +132,7 @@ func (as *InMemoryAuthService) Validate(tokenString string) (username, userID st
 	return username, userID, nil
 }
 
-// Refresh validates the given refresh token, revokes it, and returns a new access token
-// and a new refresh token. Returns an error if the token is missing or unrecognized.
-func (as *InMemoryAuthService) Refresh(refreshToken string) (accessToken, newRefreshToken string, err error) {
+func (as *authService) Refresh(refreshToken string) (accessToken, newRefreshToken string, err error) {
 	if len(refreshToken) == 0 {
 		return "", "", errors.New("token must not be empty")
 	}
@@ -148,9 +147,9 @@ func (as *InMemoryAuthService) Refresh(refreshToken string) (accessToken, newRef
 
 	delete(as.refreshTokens, refreshToken)
 
-	user, ok := as.users[username]
-	if !ok {
-		return "", "", errors.New("user not found")
+	user, err := as.users.FindByUsername(username)
+	if err != nil || user == nil {
+		return "", "", errors.New("invalid refresh token")
 	}
 
 	claims := jwt.MapClaims{
@@ -174,9 +173,7 @@ func (as *InMemoryAuthService) Refresh(refreshToken string) (accessToken, newRef
 	return accessToken, newRefreshToken, nil
 }
 
-// IssueRefreshToken generates a cryptographically random refresh token for the given username
-// and stores it for later validation. Returns an error if the username is empty or token generation fails.
-func (as *InMemoryAuthService) IssueRefreshToken(username string) (refreshToken string, err error) {
+func (as *authService) IssueRefreshToken(username string) (refreshToken string, err error) {
 	if len(username) == 0 {
 		return "", errors.New("username must not be empty")
 	}

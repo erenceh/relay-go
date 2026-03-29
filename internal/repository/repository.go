@@ -27,6 +27,16 @@ type MessageRepository interface {
 	SoftDelete(msgID string) error
 }
 
+// RoomRepository defines persistence operations for chat rooms.
+type RoomRepository interface {
+	// Create inserts a new room record into the rooms table.
+	Create(room *domain.Room) error
+	// FindByRoomName looks up a non-deleted room by its name. Returns nil, nil if not found.
+	FindByRoomName(roomName string) (*domain.Room, error)
+	// FindByRoomID looks up a non-deleted room by its ID. Returns nil, nil if not found.
+	FindByRoomID(roomID string) (*domain.Room, error)
+}
+
 // RoomMemberRepository defines persistence operations for room membership.
 type RoomMemberRepository interface {
 	// Add records that a user has joined a room.

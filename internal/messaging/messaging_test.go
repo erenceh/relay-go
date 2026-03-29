@@ -4,9 +4,40 @@ import (
 	"net"
 	"testing"
 
+	"github.com/erenceh/relay-go/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type mockRoomRepo struct {
+	rooms map[string]*domain.Room
+}
+
+func newMockRoomRepo() *mockRoomRepo {
+	return &mockRoomRepo{rooms: make(map[string]*domain.Room)}
+}
+
+func (m *mockRoomRepo) Create(room *domain.Room) error {
+	m.rooms[room.Name] = room
+	return nil
+}
+
+func (m *mockRoomRepo) FindByRoomName(name string) (*domain.Room, error) {
+	room, ok := m.rooms[name]
+	if !ok {
+		return nil, nil
+	}
+	return room, nil
+}
+
+func (m *mockRoomRepo) FindByRoomID(id string) (*domain.Room, error) {
+	for _, room := range m.rooms {
+		if room.ID == id {
+			return room, nil
+		}
+	}
+	return nil, nil
+}
 
 func TestMessaging(t *testing.T) {
 	for _, tt := range []struct {
@@ -61,13 +92,6 @@ func TestMessaging(t *testing.T) {
 			},
 		},
 		{
-			name: "DirectMessage returns error for offline user",
-			run: func(t *testing.T, router *InMemoryMessageRouter, conn net.Conn) {
-				err := router.DirectMessage("ghost", NewMessage("alice", "hello"))
-				assert.Error(t, err)
-			},
-		},
-		{
 			name: "Disconnect removes user from all rooms",
 			run: func(t *testing.T, router *InMemoryMessageRouter, conn net.Conn) {
 				require.NoError(t, router.JoinRoom("lobby", "alice", conn))
@@ -77,8 +101,6 @@ func TestMessaging(t *testing.T) {
 
 				assert.NotContains(t, router.ListRooms(), "lobby")
 				assert.NotContains(t, router.ListRooms(), "general")
-				err := router.DirectMessage("alice", NewMessage("bob", "hey"))
-				assert.Error(t, err)
 			},
 		},
 		{
@@ -92,7 +114,7 @@ func TestMessaging(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			router := NewInMemoryMessageRouter()
+			router := NewInMemoryMessageRouter(newMockRoomRepo())
 
 			server, client := net.Pipe()
 			defer server.Close()

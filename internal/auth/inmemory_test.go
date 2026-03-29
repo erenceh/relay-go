@@ -81,7 +81,7 @@ func TestAuth(t *testing.T) {
 				require.NoError(t, svc.Register("user", "password"))
 				accessToken, _, err := svc.Login("user", "password")
 				require.NoError(t, err)
-				username, err := svc.Validate(accessToken)
+				username, _, err := svc.Validate(accessToken)
 				require.NoError(t, err)
 				assert.Equal(t, "user", username)
 			},
@@ -95,7 +95,7 @@ func TestAuth(t *testing.T) {
 				}
 				token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 				expired, _ := token.SignedString([]byte("test-secret"))
-				_, err := svc.Validate(expired)
+				_, _, err := svc.Validate(expired)
 				assert.Error(t, err)
 			},
 		},
@@ -105,14 +105,14 @@ func TestAuth(t *testing.T) {
 				require.NoError(t, svc.Register("user", "password"))
 				accessToken, _, _ := svc.Login("user", "password")
 				tampered := accessToken + "x"
-				_, err := svc.Validate(tampered)
+				_, _, err := svc.Validate(tampered)
 				assert.Error(t, err)
 			},
 		},
 		{
 			name: "Validate returns error if token is empty",
 			run: func(t *testing.T, svc *InMemoryAuthService) {
-				_, err := svc.Validate("")
+				_, _, err := svc.Validate("")
 				assert.Error(t, err)
 			},
 		},
@@ -133,6 +133,7 @@ func TestAuth(t *testing.T) {
 		{
 			name: "Refresh returns new access and refresh tokens for a valid refresh token",
 			run: func(t *testing.T, svc *InMemoryAuthService) {
+				require.NoError(t, svc.Register("user", "password"))
 				refreshToken, err := svc.IssueRefreshToken("user")
 				require.NoError(t, err)
 				accessToken, newRefreshToken, err := svc.Refresh(refreshToken)
@@ -144,11 +145,12 @@ func TestAuth(t *testing.T) {
 		{
 			name: "Refresh new access token contains correct username",
 			run: func(t *testing.T, svc *InMemoryAuthService) {
+				require.NoError(t, svc.Register("user", "password"))
 				refreshToken, err := svc.IssueRefreshToken("user")
 				require.NoError(t, err)
 				accessToken, _, err := svc.Refresh(refreshToken)
 				require.NoError(t, err)
-				username, err := svc.Validate(accessToken)
+				username, _, err := svc.Validate(accessToken)
 				require.NoError(t, err)
 				assert.Equal(t, "user", username)
 			},
@@ -156,6 +158,7 @@ func TestAuth(t *testing.T) {
 		{
 			name: "Refresh invalidates the old refresh token after use",
 			run: func(t *testing.T, svc *InMemoryAuthService) {
+				require.NoError(t, svc.Register("user", "password"))
 				refreshToken, err := svc.IssueRefreshToken("user")
 				require.NoError(t, err)
 				_, _, err = svc.Refresh(refreshToken)
@@ -182,6 +185,7 @@ func TestAuth(t *testing.T) {
 		{
 			name: "IssueRefreshToken issued token can be used with Refresh",
 			run: func(t *testing.T, svc *InMemoryAuthService) {
+				require.NoError(t, svc.Register("user", "password"))
 				token, err := svc.IssueRefreshToken("user")
 				require.NoError(t, err)
 				_, _, err = svc.Refresh(token)

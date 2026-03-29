@@ -10,7 +10,7 @@ type AuthService interface {
 	// Login authenticates the user and returns a session token on success.
 	Login(username, password string) (accessToken, refreshToken string, err error)
 	// Validate checks the session token and returns the associated username.
-	Validate(token string) (username string, err error)
+	Validate(tokenString string) (username, userID string, err error)
 	// Refresh validates the given refresh token, revokes it, and returns a new access token
 	// and a new refresh token. Returns an error if the token is missing or unrecognized.
 	Refresh(refreshToken string) (accessToken, newRefreshToken string, err error)

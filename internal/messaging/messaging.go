@@ -10,6 +10,7 @@ import (
 
 	"github.com/erenceh/relay-go/internal/domain"
 	"github.com/erenceh/relay-go/internal/protocol"
+	"github.com/erenceh/relay-go/internal/repository"
 )
 
 // MessageRouter defines the interface for routing messages between users and rooms.
@@ -23,9 +24,10 @@ type MessageRouter interface {
 	// BroadcastRoom sends a message to all members of the named room.
 	// Returns an error if the room does not exists.
 	BroadcastRoom(roomName string, msg domain.Message) error
-	// DirectMessage sends a private message to a specific online user.
-	// Returns an error if the recipient is offline.
-	DirectMessage(to string, msg domain.Message) error
+	// SendTo sends a message directly to a named user if they are online.
+	SendTo(username string, data []byte) error
+	// GetRoomID returns the room id from the given room name.
+	GetRoomID(roomName string) string
 	// Disconnect removes the user from all rooms and the user map on disconnect.
 	Disconnect(username string)
 	// ListRooms returns the names of all currently active rooms.
@@ -41,16 +43,18 @@ type MessageRouter interface {
 // It manages active rooms and connected users for message routing.
 // All operations are safe for concurrent use via a mutex.
 type InMemoryMessageRouter struct {
-	mu    sync.Mutex
-	rooms map[string]*RoomSession // room name -> room
-	users map[string]net.Conn     // username -> connection, used for DM routing
+	mu       sync.Mutex
+	rooms    map[string]*RoomSession // room name -> room
+	users    map[string]net.Conn     // username -> connection, used for DM routing
+	roomRepo repository.RoomRepository
 }
 
 // NewInMemoryMessageRouter returns an initialized InMemoryMessageRouter.
-func NewInMemoryMessageRouter() *InMemoryMessageRouter {
+func NewInMemoryMessageRouter(roomRepo repository.RoomRepository) *InMemoryMessageRouter {
 	return &InMemoryMessageRouter{
-		rooms: make(map[string]*RoomSession),
-		users: make(map[string]net.Conn),
+		rooms:    make(map[string]*RoomSession),
+		users:    make(map[string]net.Conn),
+		roomRepo: roomRepo,
 	}
 }
 
@@ -86,7 +90,21 @@ func (mr *InMemoryMessageRouter) JoinRoom(roomName string, username string, conn
 	// Create the room if it doesn't exist yet.
 	roomSession, ok := mr.rooms[roomName]
 	if !ok {
-		room := domain.NewRoom(roomName)
+		existingRoom, err := mr.roomRepo.FindByRoomName(roomName)
+		if err != nil {
+			return fmt.Errorf("failed to find room: %w", err)
+		}
+
+		var room domain.Room
+		if existingRoom == nil {
+			room = domain.NewRoom(roomName)
+			if err := mr.roomRepo.Create(&room); err != nil {
+				return fmt.Errorf("failed to create room: %w", err)
+			}
+		} else {
+			room = *existingRoom
+		}
+
 		roomSession = NewRoomSession(room)
 		mr.rooms[roomName] = roomSession
 	}
@@ -144,23 +162,29 @@ func (mr *InMemoryMessageRouter) BroadcastRoom(roomName string, msg domain.Messa
 	return nil
 }
 
-// DirectMessage sends a private message to the named user.
-// Returns an error if the recipient is not currently online.
-func (mr *InMemoryMessageRouter) DirectMessage(to string, msg domain.Message) error {
+// SendTo sends a message directly to a named user if they are online.
+func (mr *InMemoryMessageRouter) SendTo(username string, data []byte) error {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
 
-	user, ok := mr.users[to]
+	conn, ok := mr.users[username]
 	if !ok {
-		return fmt.Errorf("the user:%s is offline", to)
+		return fmt.Errorf("user %s is not online", username)
 	}
 
-	directMsg := fmt.Sprintf("[DM] %s: %s", msg.From, msg.Body)
-	if err := protocol.WriteMessage(user, []byte(directMsg)); err != nil {
-		slog.Warn("failed to deliver message", "user", to, "err", err)
-	}
+	return protocol.WriteMessage(conn, data)
+}
 
-	return nil
+// GetRoomID returns the room id from the given room name.
+func (mr *InMemoryMessageRouter) GetRoomID(roomName string) string {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+
+	session, ok := mr.rooms[roomName]
+	if !ok {
+		return ""
+	}
+	return session.Room.ID
 }
 
 // Disconnect removes the user from all rooms and the user map.

@@ -9,13 +9,19 @@ import (
 	"strings"
 
 	"github.com/erenceh/relay-go/internal/auth"
+	"github.com/erenceh/relay-go/internal/db"
+	"github.com/erenceh/relay-go/internal/domain"
 	"github.com/erenceh/relay-go/internal/messaging"
 	"github.com/erenceh/relay-go/internal/presence"
 	"github.com/erenceh/relay-go/internal/protocol"
+	"github.com/erenceh/relay-go/internal/repository"
 	"github.com/erenceh/relay-go/internal/server"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	godotenv.Load()
+
 	network := "tcp"
 	address := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
@@ -26,6 +32,25 @@ func main() {
 		slog.Warn("JWT_SECRET not set, using insecure default")
 		secret = "dev-secret-change-me"
 	}
+
+	// --- Database setup ---
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		slog.Error("DATABASE_URL is required")
+		os.Exit(1)
+	}
+
+	database, err := db.Connect(databaseURL)
+	if err != nil {
+		slog.Error("failed to connect to database", "err", err)
+		os.Exit(1)
+	}
+
+	if err := db.RunMigrations(database, "db/migrations"); err != nil {
+		slog.Error("failed to run migrations", "err", err)
+		os.Exit(1)
+	}
+	slog.Info("database connected and migrations applied")
 
 	// --- Listener setup ---
 	listener, err := net.Listen(network, *address)
@@ -38,9 +63,12 @@ func main() {
 
 	// --- In-memory state ---
 	registry := server.NewRegistry()
-	authService := auth.NewInMemoryAuthService([]byte(secret))
+	userRepo := repository.NewPostgresUserRepository(database)
+	authService := auth.NewAuthService(userRepo, []byte(secret))
 	presenceStore := presence.NewInMemoryPresenceStore()
-	router := messaging.NewInMemoryMessageRouter()
+	roomRepo := repository.NewPostgresRoomRepository(database)
+	router := messaging.NewInMemoryMessageRouter(roomRepo)
+	messageRepo := repository.NewPostgresMessageRepository(database)
 
 	// --- Accept loop: spawn a goroutine per client ---
 	for {
@@ -56,7 +84,7 @@ func main() {
 		}
 
 		slog.Info("client connected", "addr", conn.RemoteAddr())
-		go handleConn(conn, registry, authService, presenceStore, router)
+		go handleConn(conn, registry, authService, presenceStore, router, messageRepo)
 	}
 }
 
@@ -68,6 +96,7 @@ func handleConn(
 	authService auth.AuthService,
 	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
+	messageRepo repository.MessageRepository,
 ) {
 	// --- Cleanup on disconnect ---
 	defer conn.Close()
@@ -77,7 +106,7 @@ func handleConn(
 
 	// --- Username handshake ---
 	protocol.WriteMessage(conn, []byte("welcome to relay-go. /register or /login:"))
-	username, err := runAuthLoop(conn, authService)
+	username, userID, err := runAuthLoop(conn, authService, presenceStore)
 	if err != nil {
 		protocol.WriteMessage(conn, []byte(err.Error()))
 		return
@@ -87,15 +116,24 @@ func handleConn(
 	defer router.Disconnect(username)
 
 	// --- Message loop ---
-	runCommandLoop(conn, presenceStore, router, username)
+	runCommandLoop(conn, presenceStore, router, username, userID, messageRepo)
 }
 
-func runAuthLoop(conn net.Conn, authService auth.AuthService) (username string, err error) {
+func runAuthLoop(
+	conn net.Conn,
+	authService auth.AuthService,
+	presenceStore presence.PresenceStore,
+) (username, userID string, err error) {
+	sendError := func(msg string) {
+		protocol.WriteMessage(conn, []byte(msg))
+		protocol.WriteMessage(conn, []byte("enter /register or /login:"))
+	}
+
 authLoop:
 	for {
 		frame, err := protocol.ReadMessage(conn)
 		if err != nil {
-			return "", fmt.Errorf("connection lost during auth: %w", err)
+			return "", "", fmt.Errorf("connection lost during auth: %w", err)
 		}
 
 		userRes := strings.TrimSpace(string(frame.Data))
@@ -104,29 +142,29 @@ authLoop:
 			protocol.WriteMessage(conn, []byte("enter your username:"))
 			userNameFrame, err := protocol.ReadMessage(conn)
 			if err != nil {
-				return "", fmt.Errorf("connection lost during auth: %w", err)
+				return "", "", fmt.Errorf("connection lost during auth: %w", err)
 			}
 			username = string(userNameFrame.Data)
 
 			protocol.WriteMessage(conn, []byte("enter your password:"))
 			userPasswordFrame, err := protocol.ReadMessage(conn)
 			if err != nil {
-				return "", fmt.Errorf("connection lost during auth: %w", err)
+				return "", "", fmt.Errorf("connection lost during auth: %w", err)
 			}
 			password := string(userPasswordFrame.Data)
 
 			if err := authService.Register(username, password); err != nil {
-				protocol.WriteMessage(conn, []byte(err.Error()))
+				sendError(err.Error())
 				continue authLoop
 			}
 			accessToken, refreshToken, err := authService.Login(username, password)
 			if err != nil {
-				protocol.WriteMessage(conn, []byte(err.Error()))
+				sendError(err.Error())
 				continue authLoop
 			}
-			username, err = authService.Validate(accessToken)
+			username, userID, err = authService.Validate(accessToken)
 			if err != nil {
-				protocol.WriteMessage(conn, []byte(err.Error()))
+				sendError(err.Error())
 				continue authLoop
 			}
 			protocol.WriteMessage(conn, []byte("registration successful"))
@@ -137,27 +175,35 @@ authLoop:
 			protocol.WriteMessage(conn, []byte("enter your username:"))
 			userNameFrame, err := protocol.ReadMessage(conn)
 			if err != nil {
-				return "", fmt.Errorf("connection lost during auth: %w", err)
+				return "", "", fmt.Errorf("connection lost during auth: %w", err)
 			}
 			username = string(userNameFrame.Data)
 
 			protocol.WriteMessage(conn, []byte("enter your password:"))
 			userPasswordFrame, err := protocol.ReadMessage(conn)
 			if err != nil {
-				return "", fmt.Errorf("connection lost during auth: %w", err)
+				return "", "", fmt.Errorf("connection lost during auth: %w", err)
 			}
 			password := string(userPasswordFrame.Data)
 
 			accessToken, refreshToken, err := authService.Login(username, password)
 			if err != nil {
-				protocol.WriteMessage(conn, []byte(err.Error()))
+				sendError(err.Error())
 				continue authLoop
 			}
-			username, err = authService.Validate(accessToken)
+			username, userID, err = authService.Validate(accessToken)
 			if err != nil {
-				protocol.WriteMessage(conn, []byte(err.Error()))
+				sendError(err.Error())
 				continue authLoop
 			}
+
+			for _, u := range presenceStore.List() {
+				if u == username {
+					sendError("user already logged in")
+					continue authLoop
+				}
+			}
+
 			protocol.WriteMessage(conn, []byte("login successful"))
 			protocol.WriteMessage(conn, []byte("refresh:"+refreshToken))
 			break authLoop
@@ -166,17 +212,17 @@ authLoop:
 			protocol.WriteMessage(conn, []byte("enter your refresh token:"))
 			refreshTokenFrame, err := protocol.ReadMessage(conn)
 			if err != nil {
-				return "", fmt.Errorf("connection lost during auth: %w", err)
+				return "", "", fmt.Errorf("connection lost during auth: %w", err)
 			}
 			refreshTokenOld := string(refreshTokenFrame.Data)
 			accessToken, refreshToken, err := authService.Refresh(refreshTokenOld)
 			if err != nil {
-				protocol.WriteMessage(conn, []byte(err.Error()))
+				sendError(err.Error())
 				continue authLoop
 			}
-			username, err = authService.Validate(accessToken)
+			username, userID, err = authService.Validate(accessToken)
 			if err != nil {
-				protocol.WriteMessage(conn, []byte(err.Error()))
+				sendError(err.Error())
 				continue authLoop
 			}
 			protocol.WriteMessage(conn, []byte("login successful"))
@@ -189,7 +235,7 @@ authLoop:
 		}
 	}
 
-	return username, nil
+	return username, userID, nil
 }
 
 func runCommandLoop(
@@ -197,11 +243,25 @@ func runCommandLoop(
 	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
 	username string,
+	userID string,
+	messageRepo repository.MessageRepository,
 ) {
 	// --- Auto-join default room ---
 	defaultRoom := "general chat"
 	currentRoom := defaultRoom
 	router.JoinRoom(currentRoom, username, conn)
+
+	roomID := router.GetRoomID(currentRoom)
+	messages, err := messageRepo.ListByRoom(roomID, 20)
+	if err != nil {
+		slog.Warn("failed to load message history", "room", currentRoom, "err", err)
+	} else {
+		for i := len(messages) - 1; i >= 0; i-- {
+			msg := messages[i]
+			formatted := fmt.Sprintf("[%s] %s: %s", currentRoom, msg.From, msg.Body)
+			protocol.WriteMessage(conn, []byte(formatted))
+		}
+	}
 
 	for {
 		frame, err := protocol.ReadMessage(conn)
@@ -222,7 +282,6 @@ func runCommandLoop(
 			commands := `
 /join <room>			Join a room
 /leave					Leave current room
-/dm <user> <msg>		Send a direct message
 /rooms					List active rooms and their members
 /who					List active users
 /quit					Disconnect
@@ -238,6 +297,19 @@ func runCommandLoop(
 			router.LeaveRoom(currentRoom, username)
 			router.JoinRoom(roomName, username, conn)
 			currentRoom = roomName
+
+			roomID := router.GetRoomID(currentRoom)
+			messages, err := messageRepo.ListByRoom(roomID, 20)
+			if err != nil {
+				slog.Warn("failed to load message history", "room", currentRoom, "err", err)
+			} else {
+				for i := len(messages) - 1; i >= 0; i-- {
+					msg := messages[i]
+					formatted := fmt.Sprintf("[%s] %s: %s", currentRoom, msg.From, msg.Body)
+					protocol.WriteMessage(conn, []byte(formatted))
+				}
+			}
+
 			notification := messaging.NewMessage("server", username+" joined the room")
 			router.BroadcastRoom(currentRoom, notification)
 
@@ -247,14 +319,6 @@ func runCommandLoop(
 			router.BroadcastRoom(currentRoom, notification)
 			router.JoinRoom(defaultRoom, username, conn)
 			currentRoom = defaultRoom
-
-		case "/dm":
-			if len(fields) < 3 {
-				protocol.WriteMessage(conn, []byte("usage: /dm <user> <message>"))
-				continue
-			}
-			body := strings.Join(fields[2:], " ")
-			router.DirectMessage(fields[1], messaging.NewMessage(username, body))
 
 		case "/rooms":
 			router.PrintRooms(conn)
@@ -269,6 +333,13 @@ func runCommandLoop(
 			if err := router.BroadcastRoom(currentRoom, messaging.NewMessage(username, msg)); err != nil {
 				protocol.WriteMessage(conn, []byte("you must be in a room to send messages"))
 			}
+
+			roomID := router.GetRoomID(currentRoom)
+			domainMsg := domain.NewMessage(userID, roomID, username, msg)
+			if err := messageRepo.Create(&domainMsg); err != nil {
+				slog.Warn("failed to persist message", "err", err)
+			}
+
 			slog.Info("message received",
 				"addr", conn.RemoteAddr(),
 				"user", username,

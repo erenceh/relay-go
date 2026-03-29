@@ -63,7 +63,12 @@ authLoop:
 			slog.Error("failed to receive prompt", "err", err)
 			os.Exit(1)
 		}
+
 		prompt := strings.ToLower(string(frame.Data))
+		if strings.Contains(prompt, "already logged in") {
+			fmt.Println("another session is already active for this account")
+			continue authLoop
+		}
 
 		if strings.Contains(prompt, "successful") {
 			fmt.Println(prompt)
