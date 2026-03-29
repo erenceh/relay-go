@@ -39,6 +39,9 @@ func (as *authService) Register(username, password string) error {
 	if len(password) == 0 {
 		return errors.New("password must not be empty")
 	}
+	if err := domain.ValidateUsername(username); err != nil {
+		return err
+	}
 
 	existing, err := as.users.FindByUsername(username)
 	if err != nil {

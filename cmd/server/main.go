@@ -299,6 +299,10 @@ func runCommandLoop(
 				continue
 			}
 			roomName := strings.Join(fields[1:], " ")
+			if err := domain.ValidateRoomName(roomName); err != nil {
+				protocol.WriteMessage(conn, []byte(err.Error()))
+				continue
+			}
 			router.LeaveRoom(currentRoom, username)
 			router.JoinRoom(roomName, username, conn)
 			currentRoom = roomName
