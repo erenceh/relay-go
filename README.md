@@ -14,7 +14,9 @@ The architecture is designed to scale from a modular monolith (v1) to a full
 microservice mesh (v4+), with gRPC for internal service communication and
 WebSocket support for browser clients planned in v5.
 
-## Features (v1)
+**This project is still in development**
+
+## Features (v2)
 
 - JWT authentication with bcrypt password hashing
 - Opaque refresh tokens with rotation
@@ -25,6 +27,10 @@ WebSocket support for browser clients planned in v5.
 - Per-user message rate limiting (10 burst, 2/sec)
 - Input validation on usernames and room names
 - Connection timeouts (30s auth, 5min idle)
+
+### Change Log
+
+- Removed `/dm` from commands
 
 ## Rate Limiting
 
@@ -45,11 +51,17 @@ relay-go/
 ├── cmd/
 │   ├── server/         # Server entrypoint
 │   └── client/         # CLI client entrypoint
+├── db/
+│   └── migrations/
 ├── internal/
 │   ├── auth/           # Token/session logic (v2)
-│   ├── messaging/      # Room and DM routing
+│   ├── db/             # database connection and migrations
+│   ├── domain/         # User, Message, Room types
+│   ├── messaging/      # Room routing
 │   ├── presence/       # Online/offline tracking
-│   └── protocol/       # Message framing and parsing
+│   ├── protocol/       # Message framing
+│   ├── ratelimit/      # Rate limiting
+│   ├── repository/     # PostgreSQL repositories
 ├── scripts/
 │   └── deploy.sh       # VPS deployment script
 ├── go.mod
@@ -69,6 +81,7 @@ microservices communicating over gRPC.
 ### Requirements
 
 - Go 1.25+
+- Docker (for PostgreSQL)
 
 ### Connect to the public server
 
@@ -79,11 +92,20 @@ go run ./cmd/client
 ### Run locally
 
 ```bash
+# start PostgreSQL
+docker compose --env-file .env up -d
+
 # terminal 1
 go run ./cmd/server
 
 # terminal 2
 go run ./cmd/client -addr localhost:8080
+```
+
+### Configuration
+
+```bash
+cp .env.example .env
 ```
 
 ### Available commands
