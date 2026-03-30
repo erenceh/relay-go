@@ -22,26 +22,23 @@ func runCleanup(db *sql.DB, retention time.Duration) error {
 	days := retention.Hours() / 24
 	slog.Info("running cleanup worker", "retention_days", days)
 
-	messagesQuery := `
+	allMessagesQuery := `
 	DELETE FROM messages
-	WHERE deleted_at IS NOT NULL
-	AND deleted_at < NOW() - INTERVAL '1 day' * $1
+	WHERE created_at < NOW() - INTERVAL '1 day' * $1
 	`
-
-	if _, err := db.Exec(messagesQuery, days); err != nil {
-		return fmt.Errorf("failed to execute delete room query: %w", err)
+	if _, err := db.Exec(allMessagesQuery, days); err != nil {
+		return fmt.Errorf("failed to execute delete old messages query: %w", err)
 	}
 
-	roomsQuery := `
+	allRoomQuery := `
 	DELETE FROM rooms
-	WHERE deleted_at IS NOT NULL
-	AND deleted_at < NOW() - INTERVAL '1 day' * $1
+	WHERE created_at < NOW() - INTERVAL '1 day' * $1
+	AND deleted_at IS NOT NULL
 	`
-
-	if _, err := db.Exec(roomsQuery, days); err != nil {
-		return fmt.Errorf("failed to execute delete room query: %w", err)
+	if _, err := db.Exec(allRoomQuery, days); err != nil {
+		return fmt.Errorf("failed to execute delete old rooms query: %w", err)
 	}
-	slog.Info("cleanup worker completed")
 
+	slog.Info("cleanup worker completed")
 	return nil
 }
