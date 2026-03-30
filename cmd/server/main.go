@@ -79,7 +79,7 @@ func main() {
 	userRepo := repository.NewPostgresUserRepository(database)
 	authService := auth.NewAuthService(userRepo, []byte(secret))
 	registrationLimiter := ratelimit.NewRegistry(3, time.Hour)
-	messageLimiter := ratelimit.NewBucketReistry(10, 2)
+	messageLimiter := ratelimit.NewBucketReistry(5, 0.5)
 	presenceStore := presence.NewInMemoryPresenceStore()
 	roomRepo := repository.NewPostgresRoomRepository(database)
 	router := messaging.NewInMemoryMessageRouter(roomRepo)
@@ -129,7 +129,7 @@ func handleConn(
 	defer presenceStore.Remove(conn)
 	defer slog.Info("client disconnected", "addr", conn.RemoteAddr())
 
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(2 * time.Minute))
 
 	// --- Username handshake ---
 	protocol.WriteMessage(conn, []byte("welcome to relay-go. /register or /login:"))

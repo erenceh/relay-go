@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-var roomNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_ -]+$`)
+var roomNameRegex = regexp.MustCompile(`^[a-zA-Z0-9 _'-]+$`)
 
 // Room represents a chat room with a name and its currently connected members.
 type Room struct {
@@ -37,7 +37,7 @@ func ValidateRoomName(name string) error {
 		return errors.New("room name must be at most 32 characters")
 	}
 	if !roomNameRegex.MatchString(name) {
-		return errors.New("room name may only contain letters, numbers, spaces, and underscores")
+		return errors.New("room name may only contain letters, numbers, spaces, underscores, hyphens, and apostrophes")
 	}
 	return nil
 }

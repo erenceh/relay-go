@@ -55,12 +55,22 @@ func TestValidateRoomName(t *testing.T) {
 		{
 			name:    "invalid special chars",
 			input:   "room#1",
-			wantErr: "room name may only contain letters, numbers, spaces, and underscores",
+			wantErr: "room name may only contain letters, numbers, spaces, underscores, hyphens, and apostrophes",
 		},
 		{
 			name:    "invalid with slash",
 			input:   "room/chat",
-			wantErr: "room name may only contain letters, numbers, spaces, and underscores",
+			wantErr: "room name may only contain letters, numbers, spaces, underscores, hyphens, and apostrophes",
+		},
+		{
+			name:    "invalid with dollar sign",
+			input:   "$$moneyroom",
+			wantErr: "room name may only contain letters, numbers, spaces, underscores, hyphens, and apostrophes",
+		},
+		{
+			name:    "invalid with ampersand",
+			input:   "&&asdf",
+			wantErr: "room name may only contain letters, numbers, spaces, underscores, hyphens, and apostrophes",
 		},
 	}
 
