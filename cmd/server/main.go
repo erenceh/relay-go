@@ -49,7 +49,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := db.RunMigrations(database, "db/migrations"); err != nil {
+	migrationsPath := os.Getenv("MIGRATIONS_PATH")
+	if migrationsPath == "" {
+		migrationsPath = "db/migrations"
+	}
+
+	if err := db.RunMigrations(database, migrationsPath); err != nil {
 		slog.Error("failed to run migrations", "err", err)
 		os.Exit(1)
 	}
