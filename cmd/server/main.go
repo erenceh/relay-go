@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,16 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("database connected and migrations applied")
+
+	retentionDays := 30
+	if val := os.Getenv("RETENTION_DAYS"); val != "" {
+		if days, err := strconv.Atoi(val); err == nil {
+			retentionDays = days
+		}
+	}
+	retention := time.Duration(retentionDays) * 24 * time.Hour
+	db.StartCleanupWorker(database, retention)
+	slog.Info("cleanup worker started", "retention_days", retentionDays)
 
 	// --- Listener setup ---
 	listener, err := net.Listen(network, *address)
