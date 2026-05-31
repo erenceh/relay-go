@@ -32,5 +32,9 @@ go.work.sum
 # .idea/
 .vscode/
 
+# Generated protobuf code
+gen/
+
 ROADMAP.md
 relay-server
+scripts/reset-db.sh
