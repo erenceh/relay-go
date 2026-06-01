@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -10,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/erenceh/relay-go/internal/auth"
+	pb "github.com/erenceh/relay-go/gen/proto"
 	"github.com/erenceh/relay-go/internal/db"
 	"github.com/erenceh/relay-go/internal/domain"
 	"github.com/erenceh/relay-go/internal/messaging"
@@ -20,6 +21,8 @@ import (
 	"github.com/erenceh/relay-go/internal/repository"
 	"github.com/erenceh/relay-go/internal/server"
 	"github.com/joho/godotenv"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
@@ -29,11 +32,11 @@ func main() {
 	address := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
 
-	secret := os.Getenv("JWT_SECRET")
+	authServiceAddr := os.Getenv("AUTH_SERVICE_ADDR")
 	// Temporary secret for testing
-	if secret == "" {
-		slog.Warn("JWT_SECRET not set, using insecure default")
-		secret = "dev-secret-change-me"
+	if authServiceAddr == "" {
+		slog.Error("AUTH_SERVICE_ADDR is required")
+		os.Exit(1)
 	}
 
 	// --- Database setup ---
@@ -70,6 +73,14 @@ func main() {
 	db.StartCleanupWorker(database, retention)
 	slog.Info("cleanup worker started", "retention_days", retentionDays)
 
+	// --- Auth Service setup ---
+	grpcConn, err := grpc.NewClient(authServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		slog.Error("failed to connect to auth service", "err", err)
+		os.Exit(1)
+	}
+	defer grpcConn.Close()
+
 	// --- Listener setup ---
 	listener, err := net.Listen(network, *address)
 	if err != nil {
@@ -81,8 +92,7 @@ func main() {
 
 	// --- In-memory state ---
 	registry := server.NewRegistry()
-	userRepo := repository.NewPostgresUserRepository(database)
-	authService := auth.NewAuthService(userRepo, []byte(secret))
+	authClient := pb.NewAuthServiceClient(grpcConn)
 	registrationLimiter := ratelimit.NewRegistry(3, time.Hour)
 	messageLimiter := ratelimit.NewBucketReistry(5, 0.5)
 	presenceStore := presence.NewInMemoryPresenceStore()
@@ -107,7 +117,7 @@ func main() {
 		go handleConn(
 			conn,
 			registry,
-			authService,
+			authClient,
 			registrationLimiter,
 			messageLimiter,
 			presenceStore,
@@ -121,7 +131,7 @@ func main() {
 func handleConn(
 	conn net.Conn,
 	registry *server.Registry,
-	authService auth.AuthService,
+	authClient pb.AuthServiceClient,
 	registrationLimiter *ratelimit.Registry,
 	messageLimiter *ratelimit.BucketRegistry,
 	presenceStore presence.PresenceStore,
@@ -138,7 +148,7 @@ func handleConn(
 
 	// --- Username handshake ---
 	protocol.WriteMessage(conn, []byte("welcome to relay-go. /register or /login:"))
-	username, userID, err := runAuthLoop(conn, authService, registrationLimiter, presenceStore)
+	username, userID, err := runAuthLoop(conn, authClient, registrationLimiter, presenceStore)
 	if err != nil {
 		protocol.WriteMessage(conn, []byte(err.Error()))
 		return
@@ -154,7 +164,7 @@ func handleConn(
 
 func runAuthLoop(
 	conn net.Conn,
-	authService auth.AuthService,
+	authClient pb.AuthServiceClient,
 	registrationLimiter *ratelimit.Registry,
 	presenceStore presence.PresenceStore,
 ) (username, userID string, err error) {
@@ -194,22 +204,20 @@ authLoop:
 			}
 			password := string(userPasswordFrame.Data)
 
-			if err := authService.Register(username, password); err != nil {
-				sendError(err.Error())
-				continue authLoop
-			}
-			accessToken, refreshToken, err := authService.Login(username, password)
+			registerRes, err := authClient.Register(context.Background(), &pb.RegisterRequest{
+				Username: username,
+				Password: password,
+			})
 			if err != nil {
 				sendError(err.Error())
 				continue authLoop
 			}
-			username, userID, err = authService.Validate(accessToken)
-			if err != nil {
-				sendError(err.Error())
-				continue authLoop
-			}
+
+			username = registerRes.Username
+			userID = registerRes.UserId
+
 			protocol.WriteMessage(conn, []byte("registration successful"))
-			protocol.WriteMessage(conn, []byte("refresh:"+refreshToken))
+			protocol.WriteMessage(conn, []byte("refresh:"+registerRes.Token))
 			break authLoop
 
 		case "/login":
@@ -227,26 +235,27 @@ authLoop:
 			}
 			password := string(userPasswordFrame.Data)
 
-			accessToken, refreshToken, err := authService.Login(username, password)
-			if err != nil {
-				sendError(err.Error())
-				continue authLoop
-			}
-			username, userID, err = authService.Validate(accessToken)
+			loginRes, err := authClient.Login(context.Background(), &pb.LoginRequest{
+				Username: username,
+				Password: password,
+			})
 			if err != nil {
 				sendError(err.Error())
 				continue authLoop
 			}
 
 			for _, u := range presenceStore.List() {
-				if u == username {
+				if u == loginRes.Username {
 					sendError("user already logged in")
 					continue authLoop
 				}
 			}
 
+			username = loginRes.Username
+			userID = loginRes.UserId
+
 			protocol.WriteMessage(conn, []byte("login successful"))
-			protocol.WriteMessage(conn, []byte("refresh:"+refreshToken))
+			protocol.WriteMessage(conn, []byte("refresh:"+loginRes.Token))
 			break authLoop
 
 		case "/refresh":
@@ -256,18 +265,19 @@ authLoop:
 				return "", "", fmt.Errorf("connection lost during auth: %w", err)
 			}
 			refreshTokenOld := string(refreshTokenFrame.Data)
-			accessToken, refreshToken, err := authService.Refresh(refreshTokenOld)
+			refreshRes, err := authClient.Refresh(context.Background(), &pb.RefreshRequest{
+				Token: refreshTokenOld,
+			})
 			if err != nil {
 				sendError(err.Error())
 				continue authLoop
 			}
-			username, userID, err = authService.Validate(accessToken)
-			if err != nil {
-				sendError(err.Error())
-				continue authLoop
-			}
+
+			username = refreshRes.Username
+			userID = refreshRes.UserId
+
 			protocol.WriteMessage(conn, []byte("login successful"))
-			protocol.WriteMessage(conn, []byte("refresh:"+refreshToken))
+			protocol.WriteMessage(conn, []byte("refresh:"+refreshRes.RefreshToken))
 			break authLoop
 
 		default:
