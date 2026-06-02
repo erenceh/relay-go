@@ -12,6 +12,8 @@ import (
 	"github.com/erenceh/relay-go/internal/repository"
 	"github.com/joho/godotenv"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func main() {
@@ -54,6 +56,9 @@ func main() {
 	authService := auth.NewAuthService(userRepo, []byte(secret))
 	grpcService := grpc.NewServer()
 	pb.RegisterAuthServiceServer(grpcService, &authGRPCServer{authService: authService})
+	healthServer := health.NewServer()
+	grpc_health_v1.RegisterHealthServer(grpcService, healthServer)
+	healthServer.SetServingStatus("auth", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	if err := grpcService.Serve(listener); err != nil {
 		slog.Error("failed to serve", "err", err)

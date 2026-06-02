@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -204,12 +205,17 @@ authLoop:
 			}
 			password := string(userPasswordFrame.Data)
 
-			registerRes, err := authClient.Register(context.Background(), &pb.RegisterRequest{
-				Username: username,
-				Password: password,
-			})
+			var registerRes *pb.RegisterResponse
+			err = callWithRetry(func() error {
+				var callErr error
+				registerRes, callErr = authClient.Register(context.Background(), &pb.RegisterRequest{
+					Username: username,
+					Password: password,
+				})
+				return callErr
+			}, 3, time.Second)
 			if err != nil {
-				sendError(err.Error())
+				sendError("auth service unavailable, please try again later")
 				continue authLoop
 			}
 
@@ -235,13 +241,17 @@ authLoop:
 			}
 			password := string(userPasswordFrame.Data)
 
-			loginRes, err := authClient.Login(context.Background(), &pb.LoginRequest{
-				Username: username,
-				Password: password,
-			})
+			var loginRes *pb.LoginResponse
+			err = callWithRetry(func() error {
+				var callErr error
+				loginRes, callErr = authClient.Login(context.Background(), &pb.LoginRequest{
+					Username: username,
+					Password: password,
+				})
+				return callErr
+			}, 3, time.Second)
 			if err != nil {
-				sendError(err.Error())
-				continue authLoop
+				sendError("auth service unavailable, please try again later")
 			}
 
 			for _, u := range presenceStore.List() {
@@ -264,13 +274,19 @@ authLoop:
 			if err != nil {
 				return "", "", fmt.Errorf("connection lost during auth: %w", err)
 			}
+
 			refreshTokenOld := string(refreshTokenFrame.Data)
-			refreshRes, err := authClient.Refresh(context.Background(), &pb.RefreshRequest{
-				Token: refreshTokenOld,
-			})
+
+			var refreshRes *pb.RefreshResponse
+			err = callWithRetry(func() error {
+				var callErr error
+				refreshRes, callErr = authClient.Refresh(context.Background(), &pb.RefreshRequest{
+					Token: refreshTokenOld,
+				})
+				return callErr
+			}, 3, time.Second)
 			if err != nil {
-				sendError(err.Error())
-				continue authLoop
+				sendError("auth service unavailable, please try again later")
 			}
 
 			username = refreshRes.Username
@@ -408,4 +424,22 @@ func runCommandLoop(
 			)
 		}
 	}
+}
+
+func callWithRetry(fn func() error, maxAttempts int, initialDelay time.Duration) error {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err := fn()
+		if err != nil {
+			slog.Warn("auth service call failed", "attempt", attempt, "err", err)
+			time.Sleep(initialDelay)
+			initialDelay *= 2
+			if initialDelay > 30*time.Second {
+				initialDelay = 30 * time.Second
+			}
+			continue
+		}
+		return nil
+	}
+	slog.Error("failed to connect")
+	return errors.New("max retry attempts reached")
 }
