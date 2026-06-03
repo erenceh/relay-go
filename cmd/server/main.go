@@ -15,6 +15,7 @@ import (
 	pb "github.com/erenceh/relay-go/gen/proto"
 	"github.com/erenceh/relay-go/internal/db"
 	"github.com/erenceh/relay-go/internal/domain"
+	"github.com/erenceh/relay-go/internal/events"
 	"github.com/erenceh/relay-go/internal/messaging"
 	"github.com/erenceh/relay-go/internal/presence"
 	"github.com/erenceh/relay-go/internal/protocol"
@@ -22,6 +23,7 @@ import (
 	"github.com/erenceh/relay-go/internal/repository"
 	"github.com/erenceh/relay-go/internal/server"
 	"github.com/joho/godotenv"
+	"github.com/nats-io/nats.go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -82,6 +84,20 @@ func main() {
 	}
 	defer grpcConn.Close()
 
+	// --- NATS setup ---
+	natsURL := os.Getenv("NATS_URL")
+	if natsURL == "" {
+		slog.Error("NATS_URL is required")
+		os.Exit(1)
+	}
+
+	nc, err := events.Connect(natsURL)
+	if err != nil {
+		slog.Error("failed to connect to NATS", "err", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
 	// --- Listener setup ---
 	listener, err := net.Listen(network, *address)
 	if err != nil {
@@ -117,6 +133,7 @@ func main() {
 		slog.Info("client connected", "addr", conn.RemoteAddr())
 		go handleConn(
 			conn,
+			nc,
 			registry,
 			authClient,
 			registrationLimiter,
@@ -131,6 +148,7 @@ func main() {
 // It runs in its own goroutine for each connected client.
 func handleConn(
 	conn net.Conn,
+	nc *nats.Conn,
 	registry *server.Registry,
 	authClient pb.AuthServiceClient,
 	registrationLimiter *ratelimit.Registry,
@@ -160,7 +178,7 @@ func handleConn(
 	defer router.Disconnect(username)
 
 	// --- Message loop ---
-	runCommandLoop(conn, messageLimiter, presenceStore, router, username, userID, messageRepo)
+	runCommandLoop(conn, nc, messageLimiter, presenceStore, router, username, userID, messageRepo)
 }
 
 func runAuthLoop(
@@ -307,6 +325,7 @@ authLoop:
 
 func runCommandLoop(
 	conn net.Conn,
+	nc *nats.Conn,
 	messageLimiter *ratelimit.BucketRegistry,
 	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
@@ -318,6 +337,18 @@ func runCommandLoop(
 	defaultRoom := "general chat"
 	currentRoom := defaultRoom
 	router.JoinRoom(currentRoom, username, conn)
+	if err := events.Publish(nc, events.SubjectUserJoined, domain.UserJoinedEvent{
+		Username: username,
+		RoomName: currentRoom,
+	}); err != nil {
+		slog.Warn("failed to publish user joined event", "username", username, "roomName", currentRoom, "err", err)
+	}
+	if err := events.Publish(nc, events.SubjectUserPresence, domain.UserPresenceEvent{
+		Username: username,
+		IsOnline: true,
+	}); err != nil {
+		slog.Warn("failed to publish user online event", "username", username, "err", err)
+	}
 
 	roomID := router.GetRoomID(currentRoom)
 	messages, err := messageRepo.ListByRoom(roomID, 20)
@@ -331,6 +362,7 @@ func runCommandLoop(
 		}
 	}
 
+	// --- Command loop ---
 	for {
 		frame, err := protocol.ReadMessage(conn)
 		if err != nil {
@@ -347,7 +379,6 @@ func runCommandLoop(
 		// --- Command router ---
 		switch fields[0] {
 		case "/help":
-			// TODO improve help formatting when terminal UI library is added (v5)
 			commands := `
 /join <room>			Join a room
 /leave					Leave current room
@@ -383,15 +414,41 @@ func runCommandLoop(
 				}
 			}
 
+			if err := events.Publish(nc, events.SubjectUserJoined, domain.UserJoinedEvent{
+				Username: username,
+				RoomName: currentRoom,
+			}); err != nil {
+				slog.Warn("failed to publish user joined event", "username", username, "roomName", currentRoom, "err", err)
+			}
+
 			notification := messaging.NewMessage("server", username+" joined the room")
 			router.BroadcastRoom(currentRoom, notification)
 
 		case "/leave":
 			router.LeaveRoom(currentRoom, username)
+
+			if err := events.Publish(nc, events.SubjectUserLeft, domain.UserLeftEvent{
+				Username: username,
+				RoomName: currentRoom,
+			}); err != nil {
+				slog.Warn("failed to publish user left event", "username", username, "roomName", currentRoom, "err", err)
+			}
+
 			notification := messaging.NewMessage("server", username+" left the room")
 			router.BroadcastRoom(currentRoom, notification)
+
 			router.JoinRoom(defaultRoom, username, conn)
 			currentRoom = defaultRoom
+
+			if err := events.Publish(nc, events.SubjectUserJoined, domain.UserJoinedEvent{
+				Username: username,
+				RoomName: currentRoom,
+			}); err != nil {
+				slog.Warn("failed to publish user joined event", "username", username, "roomName", currentRoom, "err", err)
+			}
+
+			notification = messaging.NewMessage("server", username+" joined the room")
+			router.BroadcastRoom(currentRoom, notification)
 
 		case "/rooms":
 			router.PrintRooms(conn)
@@ -417,12 +474,28 @@ func runCommandLoop(
 				slog.Warn("failed to persist message", "err", err)
 			}
 
+			if err := events.Publish(nc, events.SubjectMessageSent, domain.MessageSentEvent{
+				Sender:   username,
+				RoomName: currentRoom,
+				Message:  msg,
+			}); err != nil {
+				slog.Warn("failed to publish message event", "username", username, "roomName", currentRoom, "err", err)
+			}
+
 			slog.Info("message received",
 				"addr", conn.RemoteAddr(),
 				"user", username,
 				"msg", string(frame.Data),
 			)
 		}
+	}
+
+	// --- User disconnected ---
+	if err := events.Publish(nc, events.SubjectUserPresence, domain.UserPresenceEvent{
+		Username: username,
+		IsOnline: false,
+	}); err != nil {
+		slog.Warn("failed to publish user offline event", "username", username, "err", err)
 	}
 }
 
