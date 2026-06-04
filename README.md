@@ -16,7 +16,7 @@ WebSocket support for browser clients planned in v5.
 
 **This project is actively in development. A live demo will be available in v5.**
 
-## Features (v2)
+## Features (v3)
 
 - JWT authentication with bcrypt password hashing
 - Opaque refresh tokens with rotation
