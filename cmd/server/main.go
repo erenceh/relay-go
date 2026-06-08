@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	pb "github.com/erenceh/relay-go/gen/proto"
+	authpb "github.com/erenceh/relay-go/gen/proto/auth"
+	messagingpb "github.com/erenceh/relay-go/gen/proto/messaging"
 	"github.com/erenceh/relay-go/internal/db"
 	"github.com/erenceh/relay-go/internal/domain"
 	"github.com/erenceh/relay-go/internal/events"
@@ -34,13 +35,6 @@ func main() {
 	network := "tcp"
 	address := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
-
-	authServiceAddr := os.Getenv("AUTH_SERVICE_ADDR")
-	// Temporary secret for testing
-	if authServiceAddr == "" {
-		slog.Error("AUTH_SERVICE_ADDR is required")
-		os.Exit(1)
-	}
 
 	// --- Database setup ---
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -77,12 +71,32 @@ func main() {
 	slog.Info("cleanup worker started", "retention_days", retentionDays)
 
 	// --- Auth Service setup ---
-	grpcConn, err := grpc.NewClient(authServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	authServiceAddr := os.Getenv("AUTH_SERVICE_ADDR")
+	if authServiceAddr == "" {
+		slog.Error("AUTH_SERVICE_ADDR is required")
+		os.Exit(1)
+	}
+
+	grpcAuthConn, err := grpc.NewClient(authServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		slog.Error("failed to connect to auth service", "err", err)
 		os.Exit(1)
 	}
-	defer grpcConn.Close()
+	defer grpcAuthConn.Close()
+
+	// --- Messaging Service setup ---
+	messagingServiceAddr := os.Getenv("MESSAGING_SERVICE_ADDR")
+	if messagingServiceAddr == "" {
+		slog.Error("MESSAGING_SERVICE_ADDR is required")
+		os.Exit(1)
+	}
+
+	grpcMessagingConn, err := grpc.NewClient(messagingServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		slog.Error("failed to connect to messaging service", "err", err)
+		os.Exit(1)
+	}
+	defer grpcMessagingConn.Close()
 
 	// --- NATS setup ---
 	natsURL := os.Getenv("NATS_URL")
@@ -109,7 +123,8 @@ func main() {
 
 	// --- In-memory state ---
 	registry := server.NewRegistry()
-	authClient := pb.NewAuthServiceClient(grpcConn)
+	authClient := authpb.NewAuthServiceClient(grpcAuthConn)
+	messagingClient := messagingpb.NewMessagingServiceClient(grpcMessagingConn)
 	registrationLimiter := ratelimit.NewRegistry(3, time.Hour)
 	messageLimiter := ratelimit.NewBucketReistry(5, 0.5)
 	presenceStore := presence.NewInMemoryPresenceStore()
@@ -136,6 +151,7 @@ func main() {
 			nc,
 			registry,
 			authClient,
+			messagingClient,
 			registrationLimiter,
 			messageLimiter,
 			presenceStore,
@@ -150,7 +166,8 @@ func handleConn(
 	conn net.Conn,
 	nc *nats.Conn,
 	registry *server.Registry,
-	authClient pb.AuthServiceClient,
+	authClient authpb.AuthServiceClient,
+	messageClient messagingpb.MessagingServiceClient,
 	registrationLimiter *ratelimit.Registry,
 	messageLimiter *ratelimit.BucketRegistry,
 	presenceStore presence.PresenceStore,
@@ -178,12 +195,12 @@ func handleConn(
 	defer router.Disconnect(username)
 
 	// --- Message loop ---
-	runCommandLoop(conn, nc, messageLimiter, presenceStore, router, username, userID, messageRepo)
+	runCommandLoop(conn, nc, messageClient, messageLimiter, presenceStore, router, username, userID, messageRepo)
 }
 
 func runAuthLoop(
 	conn net.Conn,
-	authClient pb.AuthServiceClient,
+	authClient authpb.AuthServiceClient,
 	registrationLimiter *ratelimit.Registry,
 	presenceStore presence.PresenceStore,
 ) (username, userID string, err error) {
@@ -223,10 +240,10 @@ authLoop:
 			}
 			password := string(userPasswordFrame.Data)
 
-			var registerRes *pb.RegisterResponse
+			var registerRes *authpb.RegisterResponse
 			err = callWithRetry(func() error {
 				var callErr error
-				registerRes, callErr = authClient.Register(context.Background(), &pb.RegisterRequest{
+				registerRes, callErr = authClient.Register(context.Background(), &authpb.RegisterRequest{
 					Username: username,
 					Password: password,
 				})
@@ -259,10 +276,10 @@ authLoop:
 			}
 			password := string(userPasswordFrame.Data)
 
-			var loginRes *pb.LoginResponse
+			var loginRes *authpb.LoginResponse
 			err = callWithRetry(func() error {
 				var callErr error
-				loginRes, callErr = authClient.Login(context.Background(), &pb.LoginRequest{
+				loginRes, callErr = authClient.Login(context.Background(), &authpb.LoginRequest{
 					Username: username,
 					Password: password,
 				})
@@ -270,6 +287,7 @@ authLoop:
 			}, 3, time.Second)
 			if err != nil {
 				sendError("auth service unavailable, please try again later")
+				continue authLoop
 			}
 
 			for _, u := range presenceStore.List() {
@@ -295,16 +313,17 @@ authLoop:
 
 			refreshTokenOld := string(refreshTokenFrame.Data)
 
-			var refreshRes *pb.RefreshResponse
+			var refreshRes *authpb.RefreshResponse
 			err = callWithRetry(func() error {
 				var callErr error
-				refreshRes, callErr = authClient.Refresh(context.Background(), &pb.RefreshRequest{
+				refreshRes, callErr = authClient.Refresh(context.Background(), &authpb.RefreshRequest{
 					Token: refreshTokenOld,
 				})
 				return callErr
 			}, 3, time.Second)
 			if err != nil {
 				sendError("auth service unavailable, please try again later")
+				continue authLoop
 			}
 
 			username = refreshRes.Username
@@ -326,6 +345,7 @@ authLoop:
 func runCommandLoop(
 	conn net.Conn,
 	nc *nats.Conn,
+	messageClient messagingpb.MessagingServiceClient,
 	messageLimiter *ratelimit.BucketRegistry,
 	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
@@ -336,6 +356,10 @@ func runCommandLoop(
 	// --- Auto-join default room ---
 	defaultRoom := "general chat"
 	currentRoom := defaultRoom
+	messageClient.JoinRoom(context.Background(), &messagingpb.JoinRoomRequest{
+		RoomName: currentRoom,
+		Username: username,
+	})
 	router.JoinRoom(currentRoom, username, conn)
 	if err := events.Publish(nc, events.SubjectUserJoined, domain.UserJoinedEvent{
 		Username: username,
@@ -350,8 +374,12 @@ func runCommandLoop(
 		slog.Warn("failed to publish user online event", "username", username, "err", err)
 	}
 
-	roomID := router.GetRoomID(currentRoom)
-	messages, err := messageRepo.ListByRoom(roomID, 20)
+	roomID, err := messageClient.GetRoomID(context.Background(), &messagingpb.GetRoomIDRequest{RoomName: currentRoom})
+	if err != nil {
+		slog.Warn("failed to get room id", "roomName", currentRoom, "err", err)
+	}
+
+	messages, err := messageRepo.ListByRoom(roomID.RoomID, 20)
 	if err != nil {
 		slog.Warn("failed to load message history", "room", currentRoom, "err", err)
 	} else {
@@ -398,12 +426,22 @@ func runCommandLoop(
 				protocol.WriteMessage(conn, []byte(err.Error()))
 				continue
 			}
-			router.LeaveRoom(currentRoom, username)
+			messageClient.LeaveRoom(context.Background(), &messagingpb.LeaveRoomRequest{
+				RoomName: currentRoom,
+				Username: username,
+			})
+			messageClient.JoinRoom(context.Background(), &messagingpb.JoinRoomRequest{
+				RoomName: roomName,
+				Username: username,
+			})
 			router.JoinRoom(roomName, username, conn)
 			currentRoom = roomName
 
-			roomID := router.GetRoomID(currentRoom)
-			messages, err := messageRepo.ListByRoom(roomID, 20)
+			roomID, err := messageClient.GetRoomID(context.Background(), &messagingpb.GetRoomIDRequest{RoomName: currentRoom})
+			if err != nil {
+				slog.Warn("failed to get room id", "roomName", currentRoom, "err", err)
+			}
+			messages, err := messageRepo.ListByRoom(roomID.RoomID, 20)
 			if err != nil {
 				slog.Warn("failed to load message history", "room", currentRoom, "err", err)
 			} else {
@@ -425,7 +463,10 @@ func runCommandLoop(
 			router.BroadcastRoom(currentRoom, notification)
 
 		case "/leave":
-			router.LeaveRoom(currentRoom, username)
+			messageClient.LeaveRoom(context.Background(), &messagingpb.LeaveRoomRequest{
+				RoomName: currentRoom,
+				Username: username,
+			})
 
 			if err := events.Publish(nc, events.SubjectUserLeft, domain.UserLeftEvent{
 				Username: username,
@@ -437,6 +478,10 @@ func runCommandLoop(
 			notification := messaging.NewMessage("server", username+" left the room")
 			router.BroadcastRoom(currentRoom, notification)
 
+			messageClient.JoinRoom(context.Background(), &messagingpb.JoinRoomRequest{
+				RoomName: defaultRoom,
+				Username: username,
+			})
 			router.JoinRoom(defaultRoom, username, conn)
 			currentRoom = defaultRoom
 
@@ -468,8 +513,11 @@ func runCommandLoop(
 				protocol.WriteMessage(conn, []byte("you must be in a room to send messages"))
 			}
 
-			roomID := router.GetRoomID(currentRoom)
-			domainMsg := domain.NewMessage(userID, roomID, username, msg)
+			roomID, err := messageClient.GetRoomID(context.Background(), &messagingpb.GetRoomIDRequest{RoomName: currentRoom})
+			if err != nil {
+				slog.Warn("failed to get room id", "roomName", currentRoom, "err", err)
+			}
+			domainMsg := domain.NewMessage(userID, roomID.RoomID, username, msg)
 			if err := messageRepo.Create(&domainMsg); err != nil {
 				slog.Warn("failed to persist message", "err", err)
 			}

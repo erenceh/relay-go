@@ -6,9 +6,9 @@ import (
 	"net"
 	"os"
 
-	pb "github.com/erenceh/relay-go/gen/proto/auth"
-	"github.com/erenceh/relay-go/internal/auth"
+	pb "github.com/erenceh/relay-go/gen/proto/messaging"
 	"github.com/erenceh/relay-go/internal/db"
+	"github.com/erenceh/relay-go/internal/messaging"
 	"github.com/erenceh/relay-go/internal/repository"
 	"github.com/joho/godotenv"
 	"google.golang.org/grpc"
@@ -20,14 +20,8 @@ func main() {
 	godotenv.Load()
 
 	network := "tcp"
-	address := flag.String("addr", ":50051", "listen address")
+	address := flag.String("addr", ":50052", "listen address")
 	flag.Parse()
-
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		slog.Warn("JWT_SECRET not set, using insecure default")
-		secret = "dev-secret-change-me"
-	}
 
 	// --- Connect to PostreSQL Database ---
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -42,23 +36,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --- Listener setup ---
+	// -- Listener setup ---
 	listener, err := net.Listen(network, *address)
 	if err != nil {
 		slog.Error("failed to start listener", "err", err)
 		os.Exit(1)
 	}
 	defer listener.Close()
-	slog.Info("auth server listening", "addr", *address)
+	slog.Info("messaging server listening", "addr", *address)
 
-	// --- Create gRPC Authentication Server ---
+	// -- Create gRPC Messaging Server ---
 	grpcService := grpc.NewServer()
-	userRepo := repository.NewPostgresUserRepository(database)
-	authService := auth.NewAuthService(userRepo, []byte(secret))
-	pb.RegisterAuthServiceServer(grpcService, &authGRPCServer{authService: authService})
+	messagingRepo := repository.NewPostgresRoomRepository(database)
+	messagingService := messaging.NewRoomStore(messagingRepo)
+	pb.RegisterMessagingServiceServer(grpcService, &messagingGRPCServer{roomStore: messagingService})
 	healthServer := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(grpcService, healthServer)
-	healthServer.SetServingStatus("auth", grpc_health_v1.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("messaging", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	if err := grpcService.Serve(listener); err != nil {
 		slog.Error("failed to serve", "err", err)

@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package messaging;
+
+option go_package = "github.com/erenceh/relay-go/gen/messaging";
+
+service MessagingService {
+    rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
+    rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
+    rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
+    rpc ListRoomMembers(ListRoomMembersRequest) returns (ListRoomMembersResponse);
+    rpc GetRoomID(GetRoomIDRequest) returns (GetRoomIDResponse);
+}
+
+message JoinRoomRequest {
+    string roomName = 1;
+    string username = 2;
+}
+
+message JoinRoomResponse {
+    bool success = 1;
+}
+
+message LeaveRoomRequest {
+    string roomName = 1;
+    string username = 2;
+}
+
+message LeaveRoomResponse {
+    bool success = 1;
+}
+
+message ListRoomsRequest {}
+
+message ListRoomsResponse {
+    repeated string rooms = 1;
+}
+
+message ListRoomMembersRequest {
+    string roomName = 1;
+}
+
+message ListRoomMembersResponse {
+    repeated string roomMembers = 1;
+}
+
+message GetRoomIDRequest {
+    string roomName = 1;
+}
+
+message GetRoomIDResponse {
+    string roomID = 1;
+}

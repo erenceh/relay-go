@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	pb "github.com/erenceh/relay-go/gen/proto"
+	pb "github.com/erenceh/relay-go/gen/proto/auth"
 	"github.com/erenceh/relay-go/internal/auth"
 )
 

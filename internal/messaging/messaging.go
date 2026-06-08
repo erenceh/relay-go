@@ -13,6 +13,26 @@ import (
 	"github.com/erenceh/relay-go/internal/repository"
 )
 
+// RoomStore tracks room membership by name without holding any network connections.
+// It is a lightweight alternative to MessageRouter for use cases that only need
+// to know which users belong to which rooms (e.g. the messaging service, which
+// manages its own transport layer separately).
+// Implementations must be safe for concurrent use.
+type RoomStore interface {
+	// JoinRoom adds username to roomName, creating the room if it does not exist.
+	JoinRoom(roomName string, username string) error
+	// LeaveRoom removes username from roomName.
+	// Returns an error if the room does not exist.
+	LeaveRoom(roomName string, username string) error
+	// ListRooms returns the names of all currently active rooms.
+	ListRooms() []string
+	// ListRoomMembers returns the usernames of all members in roomName.
+	// Returns an error if the room does not exist.
+	ListRoomMembers(roomName string) ([]string, error)
+	// GetRoomID returns the stable ID for roomName.
+	GetRoomID(roomName string) string
+}
+
 // MessageRouter defines the interface for routing messages between users and rooms.
 // Implementations must be safe for concurrent use.
 type MessageRouter interface {
