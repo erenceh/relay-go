@@ -40,30 +40,32 @@ WebSocket support for browser clients planned in v5.
 - API gateway with WebSocket transport for browser clients
 - relay-web browser client
 
-## Getting Started
+## Running Locally
 
 ### Requirements
 
 - Go 1.25+
-- Docker (for PostgreSQL)
+- Docker
 
-### Run locally
+### Start infrastructure
 
 ```bash
-# start PostgreSQL
-docker compose --env-file .env up -d
-
-# terminal 1
-go run ./cmd/server
-
-# terminal 2
-go run ./cmd/client -addr localhost:8080
+docker compose --env-file .env.db up -d
 ```
 
-### Configuration
+### Start services (each in a separate terminal)
 
 ```bash
-cp .env.example .env
+go run ./cmd/auth-service
+go run ./cmd/messaging-service
+go run ./cmd/presence-service
+go run ./cmd/server
+```
+
+### Connect a client
+
+```bash
+go run ./cmd/client -addr localhost:8080
 ```
 
 ### Available commands
