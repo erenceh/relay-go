@@ -10,13 +10,13 @@ custom length-prefix framing protocol. The project is intentionally built close
 to the metal; no frameworks, no managed messaging layers - to explore real
 networking and systems programming.
 
-The architecture is designed to scale from a modular monolith (v1) to a full
-microservice mesh (v4+), with gRPC for internal service communication and
-WebSocket support for browser clients planned in v5.
+The architecture has evolved from a modular monolith (v1) to a full microservice
+mesh (v4), with gRPC for internal service communication and WebSocket support
+for browser clients planned in v5.
 
 **This project is actively in development. A live demo will be available in v5.**
 
-## Features (v3)
+## Features (v4)
 
 - JWT authentication with bcrypt password hashing
 - Opaque refresh tokens with rotation
@@ -27,6 +27,21 @@ WebSocket support for browser clients planned in v5.
 - Per-user message rate limiting (10 burst, 2/sec)
 - Input validation on usernames and room names
 - Connection timeouts (30s auth, 5min idle)
+- gRPC-based microservice architecture (auth, messaging, presence)
+- NATS message broker for event-driven service communication
+- Health check endpoints on all gRPC services
+
+## Architecture
+
+```
+cmd/server              - TCP gateway, handles client connections
+cmd/auth-service        - gRPC auth service (register, login, token validation)
+cmd/messaging-service   - gRPC messaging service (room state management)
+cmd/presence-service    - gRPC presence service (online/offline tracking via NATS)
+```
+
+Services communicate internally over gRPC. NATS carries presence and messaging
+events between services asynchronously.
 
 ## Rate Limiting
 
@@ -35,10 +50,9 @@ WebSocket support for browser clients planned in v5.
 
 ## Planned
 
-- gRPC-based microservice split (auth, messaging, presence)
-- Message broker (NATS/Redis) for event-driven architecture
 - API gateway with WebSocket transport for browser clients
 - relay-web browser client
+- AWS deployment
 
 ## Running Locally
 
@@ -46,6 +60,14 @@ WebSocket support for browser clients planned in v5.
 
 - Go 1.25+
 - Docker
+
+### Configuration
+
+```bash
+cp .env.example .env
+cp .env.example .env.db
+# fill in your values
+```
 
 ### Start infrastructure
 
@@ -101,3 +123,7 @@ Both services log warnings on each failed retry attempt and an error when retrie
 ## Deployment
 
 The live server is currently offline. It will be redeployed on AWS for v5 alongside the web client.
+
+## License
+
+MIT
