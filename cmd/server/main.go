@@ -14,6 +14,7 @@ import (
 
 	authpb "github.com/erenceh/relay-go/gen/proto/auth"
 	messagingpb "github.com/erenceh/relay-go/gen/proto/messaging"
+	presencepb "github.com/erenceh/relay-go/gen/proto/presence"
 	"github.com/erenceh/relay-go/internal/db"
 	"github.com/erenceh/relay-go/internal/domain"
 	"github.com/erenceh/relay-go/internal/events"
@@ -98,6 +99,20 @@ func main() {
 	}
 	defer grpcMessagingConn.Close()
 
+	// --- Presence Service setup ---
+	presenceServiceAddr := os.Getenv("PRESENCE_SERVICE_ADDR")
+	if presenceServiceAddr == "" {
+		slog.Error("PRESENCE_SERVICE_ADDR is required")
+		os.Exit(1)
+	}
+
+	grpcPresenceConn, err := grpc.NewClient(presenceServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		slog.Error("failed to connect to messaging service", "err", err)
+		os.Exit(1)
+	}
+	defer grpcPresenceConn.Close()
+
 	// --- NATS setup ---
 	natsURL := os.Getenv("NATS_URL")
 	if natsURL == "" {
@@ -125,6 +140,7 @@ func main() {
 	registry := server.NewRegistry()
 	authClient := authpb.NewAuthServiceClient(grpcAuthConn)
 	messagingClient := messagingpb.NewMessagingServiceClient(grpcMessagingConn)
+	presenceClient := presencepb.NewPresenceServiceClient(grpcPresenceConn)
 	registrationLimiter := ratelimit.NewRegistry(3, time.Hour)
 	messageLimiter := ratelimit.NewBucketReistry(5, 0.5)
 	presenceStore := presence.NewInMemoryPresenceStore()
@@ -152,6 +168,7 @@ func main() {
 			registry,
 			authClient,
 			messagingClient,
+			presenceClient,
 			registrationLimiter,
 			messageLimiter,
 			presenceStore,
@@ -168,6 +185,7 @@ func handleConn(
 	registry *server.Registry,
 	authClient authpb.AuthServiceClient,
 	messageClient messagingpb.MessagingServiceClient,
+	presenceClient presencepb.PresenceServiceClient,
 	registrationLimiter *ratelimit.Registry,
 	messageLimiter *ratelimit.BucketRegistry,
 	presenceStore presence.PresenceStore,
@@ -195,7 +213,18 @@ func handleConn(
 	defer router.Disconnect(username)
 
 	// --- Message loop ---
-	runCommandLoop(conn, nc, messageClient, messageLimiter, presenceStore, router, username, userID, messageRepo)
+	runCommandLoop(
+		conn,
+		nc,
+		messageClient,
+		presenceClient,
+		messageLimiter,
+		presenceStore,
+		router,
+		username,
+		userID,
+		messageRepo,
+	)
 }
 
 func runAuthLoop(
@@ -346,6 +375,7 @@ func runCommandLoop(
 	conn net.Conn,
 	nc *nats.Conn,
 	messageClient messagingpb.MessagingServiceClient,
+	presenceClient presencepb.PresenceServiceClient,
 	messageLimiter *ratelimit.BucketRegistry,
 	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
@@ -499,8 +529,11 @@ func runCommandLoop(
 			router.PrintRooms(conn)
 
 		case "/who":
-			users := presenceStore.List()
-			response := "online: " + strings.Join(users, ", ")
+			users, err := presenceClient.ListOnline(context.Background(), &presencepb.ListOnlineRequest{})
+			if err != nil {
+				slog.Warn("failed to get online users", "err", err)
+			}
+			response := "online: " + strings.Join(users.Users, ", ")
 			protocol.WriteMessage(conn, []byte(response))
 
 		default:
