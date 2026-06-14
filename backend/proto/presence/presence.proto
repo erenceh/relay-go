@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package presence;
+
+option go_package = "github.com/erenceh/relay-go/backend/gen/presence";
+
+service PresenceService {
+    rpc ListOnline(ListOnlineRequest) returns (ListOnlineResponse);
+}
+
+message ListOnlineRequest {}
+
+message ListOnlineResponse {
+    repeated string users = 1;
+}
