@@ -4,8 +4,14 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"net"
 )
+
+// Conn is the minimal read/write interface required by the protocol framing functions.
+// Both net.Conn and any in-memory pipe satisfy this interface.
+type Conn interface {
+	Read(b []byte) (n int, err error)
+	Write(b []byte) (n int, err error)
+}
 
 // Frame represents a single length-prefixed protocol message.
 // Length holds the byte count of Data as encoded in the 4-byte header.
@@ -18,7 +24,7 @@ type Frame struct {
 // It first reads the 4-byte big-endian length header, then reads
 // exactly that many bytes as the payload.
 // Returns an error if either read fails or the connection is closed mid-message.
-func ReadMessage(conn net.Conn) (*Frame, error) {
+func ReadMessage(conn Conn) (*Frame, error) {
 	buf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, buf); err != nil {
 		return nil, fmt.Errorf("read header error: %w", err)
@@ -42,7 +48,7 @@ func ReadMessage(conn net.Conn) (*Frame, error) {
 // WriteMessage writes data to conn as a length-prefixed message.
 // It sends a 4-byte big-endian length header followed by the payload bytes.
 // Returns an error if either the header or payload write fails.
-func WriteMessage(conn net.Conn, data []byte) error {
+func WriteMessage(conn Conn, data []byte) error {
 	length := uint32(len(data))
 	buf := make([]byte, 4)
 	binary.BigEndian.PutUint32(buf, length)

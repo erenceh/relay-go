@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -24,11 +25,19 @@ import (
 	"github.com/erenceh/relay-go/backend/internal/ratelimit"
 	"github.com/erenceh/relay-go/backend/internal/repository"
 	"github.com/erenceh/relay-go/backend/internal/server"
+	wsadapter "github.com/erenceh/relay-go/backend/internal/transport/websocket"
+	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
 
 func main() {
 	godotenv.Load()
@@ -148,7 +157,47 @@ func main() {
 	router := messaging.NewInMemoryMessageRouter(roomRepo)
 	messageRepo := repository.NewPostgresMessageRepository(database)
 
-	// --- Accept loop: spawn a goroutine per client ---
+	// --- WebSocket Endpoint ---
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		wsConn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			slog.Warn("failed to upgrade websocket connection", "err", err)
+			return
+		}
+
+		adaptedConn := wsadapter.NewAdapter(wsConn)
+
+		if err := registry.Add(adaptedConn); err != nil {
+			slog.Warn("connection rejected", "err", err)
+			adaptedConn.Close()
+			return
+		}
+
+		slog.Info("websocket client connected", "addr", adaptedConn.RemoteAddr())
+		go handleConn(
+			adaptedConn,
+			nc,
+			registry,
+			authClient,
+			messagingClient,
+			presenceClient,
+			registrationLimiter,
+			messageLimiter,
+			presenceStore,
+			router,
+			messageRepo,
+		)
+	})
+
+	// --- HTTP server ---
+	go func() {
+		slog.Info("websocket server listerning", "addr", ":8081")
+		if err := http.ListenAndServe(":8081", nil); err != nil {
+			slog.Error("websocket server failed", "err", err)
+		}
+	}()
+
+	// --- TCP Accept loop: spawn a goroutine per client ---
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -173,7 +222,8 @@ func main() {
 			messageLimiter,
 			presenceStore,
 			router,
-			messageRepo)
+			messageRepo,
+		)
 	}
 }
 
