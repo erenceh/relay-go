@@ -159,6 +159,27 @@ func main() {
 
 	// --- WebSocket Endpoint ---
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("Authorization")
+
+		var preAuthUsername, preAuthUserID string
+
+		if token != "" {
+			var tokenRes *authpb.ValidateTokenResponse
+			err = callWithRetry(func() error {
+				var callErr error
+				tokenRes, callErr = authClient.ValidateToken(context.Background(), &authpb.ValidateTokenRequest{
+					Token: token,
+				})
+				return callErr
+			}, 3, time.Second)
+			if err != nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			preAuthUsername = tokenRes.Username
+			preAuthUserID = tokenRes.UserId
+		}
+
 		wsConn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			slog.Warn("failed to upgrade websocket connection", "err", err)
@@ -186,6 +207,8 @@ func main() {
 			presenceStore,
 			router,
 			messageRepo,
+			preAuthUsername,
+			preAuthUserID,
 		)
 	})
 
@@ -223,6 +246,7 @@ func main() {
 			presenceStore,
 			router,
 			messageRepo,
+			"", "", // not pre-authenticated
 		)
 	}
 }
@@ -241,6 +265,8 @@ func handleConn(
 	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
 	messageRepo repository.MessageRepository,
+	preAuthUsername string,
+	preAuthUserID string,
 ) {
 	// --- Cleanup on disconnect ---
 	defer conn.Close()
@@ -250,12 +276,18 @@ func handleConn(
 
 	conn.SetDeadline(time.Now().Add(2 * time.Minute))
 
-	// --- Username handshake ---
-	protocol.WriteMessage(conn, []byte("welcome to relay-go. /register or /login:"))
-	username, userID, err := runAuthLoop(conn, authClient, registrationLimiter, presenceStore)
-	if err != nil {
-		protocol.WriteMessage(conn, []byte(err.Error()))
-		return
+	var username, userID string
+	if preAuthUsername != "" {
+		username, userID = preAuthUsername, preAuthUserID
+	} else {
+		protocol.WriteMessage(conn, []byte("welcome to relay-go. /register or /login:"))
+
+		var err error
+		username, userID, err = runAuthLoop(conn, authClient, registrationLimiter, presenceStore)
+		if err != nil {
+			protocol.WriteMessage(conn, []byte(err.Error()))
+			return
+		}
 	}
 	conn.SetDeadline(time.Now().Add(5 * time.Minute))
 

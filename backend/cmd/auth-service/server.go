@@ -54,12 +54,15 @@ func (a *authGRPCServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.L
 }
 
 func (a *authGRPCServer) ValidateToken(ctx context.Context, req *pb.ValidateTokenRequest) (*pb.ValidateTokenResponse, error) {
-	username, _, err := a.authService.Validate(req.Token)
+	username, userID, err := a.authService.Validate(req.Token)
 	if err != nil {
 		return nil, fmt.Errorf("error validating user: %w", err)
 	}
 
-	return &pb.ValidateTokenResponse{Username: username}, nil
+	return &pb.ValidateTokenResponse{
+		Username: username,
+		UserId:   userID,
+	}, nil
 }
 
 func (a *authGRPCServer) Refresh(ctx context.Context, req *pb.RefreshRequest) (*pb.RefreshResponse, error) {

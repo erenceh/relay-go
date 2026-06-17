@@ -39,6 +39,7 @@ message ValidateTokenRequest {
 
 message ValidateTokenResponse {
     string username = 1;
+    string user_id = 2;
 }
 
 message RefreshRequest {
