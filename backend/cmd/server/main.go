@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -212,6 +213,10 @@ func main() {
 		)
 	})
 
+	handler := &gatewayHandler{authClient: authClient}
+	http.HandleFunc("/api/login", handler.handleLogin)
+	http.HandleFunc("/api/register", handler.handleRegister)
+
 	// --- HTTP server ---
 	go func() {
 		slog.Info("websocket server listerning", "addr", ":8081")
@@ -307,6 +312,103 @@ func handleConn(
 		userID,
 		messageRepo,
 	)
+}
+
+type gatewayHandler struct {
+	authClient authpb.AuthServiceClient
+}
+
+func (h *gatewayHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var loginRes *authpb.LoginResponse
+	err := callWithRetry(func() error {
+		var callErr error
+		loginRes, callErr = h.authClient.Login(context.Background(), &authpb.LoginRequest{
+			Username: req.Username,
+			Password: req.Password,
+		})
+		return callErr
+	}, 3, time.Second)
+	if err != nil {
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	json.NewEncoder(w).Encode(struct {
+		Token    string `json:"token"`
+		Username string `json:"username"`
+		UserID   string `json:"user_id"`
+	}{
+		Token:    loginRes.Token,
+		Username: loginRes.Username,
+		UserID:   loginRes.UserId,
+	})
+}
+
+func (h *gatewayHandler) handleRegister(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var registerRes *authpb.RegisterResponse
+	err := callWithRetry(func() error {
+		var callErr error
+		registerRes, callErr = h.authClient.Register(context.Background(), &authpb.RegisterRequest{
+			Username: req.Username,
+			Password: req.Password,
+		})
+		return callErr
+	}, 3, time.Second)
+	if err != nil {
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		Token    string `json:"token"`
+		Username string `json:"username"`
+		UserID   string `json:"user_id"`
+	}{
+		Token:    registerRes.Token,
+		Username: registerRes.Username,
+		UserID:   registerRes.UserId,
+	})
 }
 
 func runAuthLoop(
