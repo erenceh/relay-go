@@ -50,14 +50,10 @@ func ReadMessage(conn Conn) (*Frame, error) {
 // Returns an error if either the header or payload write fails.
 func WriteMessage(conn Conn, data []byte) error {
 	length := uint32(len(data))
-	buf := make([]byte, 4)
+	buf := make([]byte, 4+len(data))
 	binary.BigEndian.PutUint32(buf, length)
-	if _, err := conn.Write(buf); err != nil {
-		return fmt.Errorf("write header error: %w", err)
-	}
-	if _, err := conn.Write(data); err != nil {
-		return fmt.Errorf("write body error: %w", err)
-	}
+	copy(buf[4:], data)
+	_, err := conn.Write(buf)
 
-	return nil
+	return err
 }

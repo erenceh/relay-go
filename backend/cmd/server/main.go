@@ -160,7 +160,7 @@ func main() {
 
 	// --- WebSocket Endpoint ---
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		token := r.Header.Get("Authorization")
+		token := r.URL.Query().Get("token")
 
 		var preAuthUsername, preAuthUserID string
 
@@ -306,7 +306,6 @@ func handleConn(
 		messageClient,
 		presenceClient,
 		messageLimiter,
-		presenceStore,
 		router,
 		username,
 		userID,
@@ -561,7 +560,6 @@ func runCommandLoop(
 	messageClient messagingpb.MessagingServiceClient,
 	presenceClient presencepb.PresenceServiceClient,
 	messageLimiter *ratelimit.BucketRegistry,
-	presenceStore presence.PresenceStore,
 	router messaging.MessageRouter,
 	username string,
 	userID string,

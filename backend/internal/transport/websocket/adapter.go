@@ -40,7 +40,7 @@ func (a *Adapter) Read(b []byte) (int, error) {
 
 // Write satisfies io.Writer. It sends b as a single WebSocket text message.
 func (a *Adapter) Write(b []byte) (n int, err error) {
-	if err := a.conn.WriteMessage(gorilla.TextMessage, b); err != nil {
+	if err := a.conn.WriteMessage(gorilla.BinaryMessage, b); err != nil {
 		return 0, err
 	}
 	return len(b), nil
